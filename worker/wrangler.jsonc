@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "affluents",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "affluents.money", "custom_domain": true },
+    { "pattern": "www.affluents.money", "custom_domain": true }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "affluents",
+      "database_id": "5734395a-b99e-47be-9194-d257e63002d7",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    // Arc testnet facts verified 2026-07-16 from docs.arc.io (see PROGRESS.md).
+    "ARC_CHAIN_ID": "5042002",
+    "USDC_ADDRESS": "0x3600000000000000000000000000000000000000",
+    "EURC_ADDRESS": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+    "ARC_EXPLORER": "https://testnet.arcscan.app",
+    // 'treasury' (fixed labeled demo rate) until App Kit FX lands in Phase 4.
+    "FX_ADAPTER": "treasury"
+  }
+}

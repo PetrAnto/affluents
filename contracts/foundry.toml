@@ -1,0 +1,13 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+
+# anvil cannot reproduce Arc semantics (dual-decimal native USDC, EIP-7708);
+# chain-behavior checks run against the real Arc testnet RPC (CLAUDE.md).
+[rpc_endpoints]
+arc_testnet = "https://rpc.testnet.arc.network"

@@ -1,0 +1,22 @@
+{
+  "name": "@affluents/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply affluents --remote",
+    "migrate:local": "wrangler d1 migrations apply affluents --local",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@affluents/shared": "*",
+    "hono": "^4.6.0",
+    "uqr": "^0.1.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,77 @@
+/* ============================================================
+   AFFLUENTS — design tokens
+   affluents.money · "Confluence charts" system · light-first
+   ============================================================ */
+
+:root {
+  /* ---- Color ---- */
+  --mist:    #F2F4F3;  /* page background */
+  --ink:     #14232A;  /* primary text */
+  --river:   #23617A;  /* primary accent · links · Spend */
+  --reserve: #B8893D;  /* ochre · Reserve · exception flags (never red) */
+  --earn:    #35684F;  /* deep green · Earn · success checks */
+  --contour: #D9DFDD;  /* hairlines · gridlines · faint glyph strokes */
+
+  /* Derived (used throughout the UI, kept in-palette) */
+  --muted:      #5A6A6E;  /* secondary text on mist/white */
+  --surface:    #FFFFFF;  /* cards, tables */
+  --river-deep: #1C5066;  /* :hover of --river */
+
+  /* ---- Type ---- */
+  /* EB Garamond is DISPLAY ONLY: wordmark, page titles, the big payment amount. */
+  --font-display: 'EB Garamond', Georgia, serif;
+  --font-body:    'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Type scale */
+  --text-amount:   72px;    /* payment amount (display, weight 500) */
+  --text-hero:     60px;    /* landing tagline max (display; clamps to 34px) */
+  --text-stat:     28px;    /* dashboard bucket amounts (body, weight 600, tnum) */
+  --text-title:    25px;    /* card/page titles (display, weight 500) */
+  --text-wordmark: 21px;    /* "affluents" lockup (display, weight 500) */
+  --text-body:     14px;
+  --text-ui:       13.5px;  /* buttons (payment CTA is 16px), links, status */
+  --text-small:    12.5px;  /* notes, table meta */
+  --text-caption:  12px;    /* field labels, card captions */
+  --text-label:    11px;    /* UPPERCASE section labels, letter-spacing 0.14em */
+
+  /* ---- Spacing scale ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 44px;
+
+  /* ---- Radii ---- */
+  --radius-control: 6px;   /* inputs, small buttons */
+  --radius-button:  7px;   /* buttons (payment CTA: 8px) */
+  --radius-card:    10px;  /* cards */
+
+  /* ---- Lines ---- */
+  --hairline: 1px solid var(--contour);   /* row dividers, gridlines, card borders */
+  --glyph-stroke: 1.4px;                  /* single-weight confluence glyph */
+
+  /* ---- Motion: the ONE signature animation ----
+     On payment verification a line flows from the amount and branches
+     into the three buckets. Channel: 180ms; branches: remaining 420ms. */
+  --route-duration: 600ms;
+  --route-ease: cubic-bezier(0.25, 0.6, 0.3, 1);  /* ease-out */
+}
+
+/* Every amount: Inter, tabular figures, always 2 decimals. */
+.amount,
+.tnum {
+  font-feature-settings: 'tnum';
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion: routing renders in its settled state, nothing moves. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --route-duration: 0ms; }
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

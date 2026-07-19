@@ -1,0 +1,17 @@
+{
+  "name": "affluents-monorepo",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "worker",
+    "orchestrator"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "deploy": "npm run deploy --workspace worker"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}
