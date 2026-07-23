@@ -241,3 +241,45 @@ BASE_URL + INTERNAL_API_KEY from .env).
 - Gotcha confirmed again: the first `/deck` read after `wrangler deploy`
   served a stale edge-cached copy (8 slides); a cache-busted request returned
   9. Re-check with `?cb=$RANDOM` before diagnosing a deploy as failed.
+
+## Stale invoice cleanup + RPC rate-limit fix — 2026-07-23
+- **Retired the four never-paid invoices** so the orchestrator stops polling
+  them: 2026-001 (`awaiting_wallet`, no wallet), 2026-007 (PetrAnto, 20.00),
+  2026-008 (Test Client, 100.00), 2026-009 (Test Client 20260723, 5.00). All
+  four had `received_usdc6 = 0`, `overpaid_usdc6 = 0`, and **zero ledger and
+  zero execution rows** — verified before deletion, not assumed. The four rows
+  were dumped to `~/affluents-backup-invoices.json` (outside the repo) first.
+- **The completed invoices were not touched**: 2026-003/004/005/006 remain
+  `completed` with their wallets `retired` and their 4–5 ledger / 4 execution
+  rows intact. They are the routed evidence behind the deck's "four invoices"
+  claim and slide 4's figures.
+- New internal endpoint `POST /api/internal/invoices/:id/retire`
+  (`worker/src/index.ts`), behind the same `X-Internal-Key` middleware as every
+  other `/api/internal` route (verified: 401 with no key and with a wrong key).
+  It re-reads state SERVER-SIDE and refuses with **409, writing nothing**,
+  unless status is `awaiting_wallet`/`awaiting_payment`, both amount columns
+  are 0, and no ledger or execution rows reference the invoice. Proven: a
+  retire call against completed 2026-003 returned 409 listing all four failing
+  reasons and left the row unchanged. On success the deposit wallet is returned
+  to the pool (`status='free'`, `invoice_id=NULL`, `baseline_usdc6=0`) — never
+  deleted, since these are real Circle wallets.
+- Also added read-only `GET /api/internal/invoices` — full inventory with
+  per-invoice ledger/execution row counts, the query used to make the
+  keep/remove decision.
+- The pre-existing `/api/internal/test-cleanup` was **not** used and does not
+  fit this job: it selects only `label LIKE 'concurrency-test-%'` (matches none
+  of these invoices) and it hard-DELETEs `deposit_wallets` rows rather than
+  releasing them to `free`. Left as-is for the concurrency test.
+- **RPC rate limit found at 5s polling.** With three watched invoices the
+  orchestrator's `USDC.balanceOf` reads against
+  https://rpc.testnet.arc.network returned `RPC Request failed … Details:
+  request limit reached`, logged as `verify <id> failed`. Verification is
+  balance-delta based, so this stalled detection rather than corrupting state.
+  **`POLL_INTERVAL_MS=15000` is now set** in the repo-root `.env` (default in
+  `orchestrator/src/config.ts` remains 5000); confirmed live — successive
+  orchestrator log lines are 15s apart.
+- Post-cleanup state verified: `reported=0 watching=0 freeWallets=6`, wallet
+  pool back to 6 free, no RPC errors for over a minute. Note the orchestrator
+  only logs the work summary when it CHANGES
+  (`orchestrator/src/index.ts:40`) — silence is the steady state, not a stall;
+  liveness was confirmed separately from the tsx child process's IO counters.

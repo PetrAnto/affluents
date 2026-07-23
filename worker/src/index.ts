@@ -243,6 +243,24 @@ internal.get('/ping', (c) => c.json({ ok: true, time: new Date().toISOString() }
 
 internal.get('/work', async (c) => c.json(await pullWork(c.env)));
 
+/**
+ * Read-only inventory of every invoice with the facts needed to decide whether
+ * it is safe to retire: funds received, and whether it has any ledger or
+ * execution rows. Read-only by construction — no writes.
+ */
+internal.get('/invoices', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT i.id, i.display_no, i.label, i.amount_usdc6, i.status, i.received_usdc6,
+            i.overpaid_usdc6, i.created_at, w.address AS deposit_address,
+            w.id AS wallet_id, w.status AS wallet_status,
+            (SELECT COUNT(*) FROM ledger l WHERE l.invoice_id = i.id) AS ledger_rows,
+            (SELECT COUNT(*) FROM executions e WHERE e.invoice_id = i.id) AS execution_rows
+     FROM invoices i LEFT JOIN deposit_wallets w ON w.id = i.wallet_id
+     ORDER BY i.display_no`,
+  ).all();
+  return c.json({ invoices: results });
+});
+
 internal.post('/wallets', async (c) => {
   const body = await c.req.json<{ wallets: Array<{ address: string; circleWalletId?: string; baselineUsdc6?: string; bufferNative18?: string }> }>();
   if (!Array.isArray(body.wallets) || body.wallets.length === 0) {
@@ -293,6 +311,64 @@ internal.post('/verifications', async (c) => {
   const res = await applyVerification(c.env, body.invoiceId, BigInt(body.balanceUsdc6), body.txResults ?? []);
   if (!res) return c.json({ error: 'invoice not found' }, 404);
   return c.json({ ok: true, ...res });
+});
+
+/**
+ * Retire an invoice that was never paid: delete the invoice row and return its
+ * deposit wallet to the free pool. Destructive, so the guard is re-read
+ * SERVER-SIDE inside this handler and the whole thing refuses with 409 without
+ * writing anything unless ALL hold: status is a pre-payment state, no funds
+ * were received or flagged, and no ledger or execution rows reference it.
+ * A completed (or partially routed) invoice can therefore never be removed,
+ * whatever id the caller passes.
+ */
+internal.post('/invoices/:id/retire', async (c) => {
+  const id = c.req.param('id');
+  const inv = await c.env.DB.prepare(
+    `SELECT i.id, i.display_no, i.status, i.received_usdc6, i.overpaid_usdc6, i.wallet_id,
+            (SELECT COUNT(*) FROM ledger l WHERE l.invoice_id = i.id) AS ledger_rows,
+            (SELECT COUNT(*) FROM executions e WHERE e.invoice_id = i.id) AS execution_rows
+     FROM invoices i WHERE i.id = ?1`,
+  )
+    .bind(id)
+    .first<{
+      id: string;
+      display_no: string;
+      status: string;
+      received_usdc6: number;
+      overpaid_usdc6: number;
+      wallet_id: string | null;
+      ledger_rows: number;
+      execution_rows: number;
+    }>();
+  if (!inv) return c.json({ error: 'invoice not found' }, 404);
+
+  const reasons: string[] = [];
+  if (inv.status !== 'awaiting_wallet' && inv.status !== 'awaiting_payment') {
+    reasons.push(`status is '${inv.status}', not a pre-payment state`);
+  }
+  if (inv.received_usdc6 !== 0) reasons.push(`received_usdc6 is ${inv.received_usdc6}, not 0`);
+  if (inv.overpaid_usdc6 !== 0) reasons.push(`overpaid_usdc6 is ${inv.overpaid_usdc6}, not 0`);
+  if (inv.ledger_rows !== 0) reasons.push(`${inv.ledger_rows} ledger row(s) reference it`);
+  if (inv.execution_rows !== 0) reasons.push(`${inv.execution_rows} execution row(s) reference it`);
+  if (reasons.length > 0) {
+    return c.json({ error: 'refused: invoice is not an unpaid retirable invoice', displayNo: inv.display_no, reasons }, 409);
+  }
+
+  // Wallet returns to the free pool (never deleted — these are real Circle
+  // wallets) with its claim and baseline cleared, ready for the next invoice.
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE deposit_wallets SET status = 'free', invoice_id = NULL, baseline_usdc6 = 0 WHERE invoice_id = ?1`,
+    ).bind(id),
+    c.env.DB.prepare(`DELETE FROM invoices WHERE id = ?1`).bind(id),
+  ]);
+  return c.json({
+    ok: true,
+    displayNo: inv.display_no,
+    walletsFreed: res[0].meta.changes,
+    invoicesDeleted: res[1].meta.changes,
+  });
 });
 
 /**
