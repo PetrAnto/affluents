@@ -366,8 +366,8 @@ internal.post('/invoices/:id/retire', async (c) => {
   return c.json({
     ok: true,
     displayNo: inv.display_no,
-    walletsFreed: res[0].meta.changes,
-    invoicesDeleted: res[1].meta.changes,
+    walletsFreed: res[0]?.meta.changes ?? 0,
+    invoicesDeleted: res[1]?.meta.changes ?? 0,
   });
 });
 

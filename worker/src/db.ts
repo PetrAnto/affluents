@@ -366,20 +366,46 @@ export async function applyVerification(
   const amount = BigInt(inv.amount_usdc6);
   const baseline = BigInt(inv.baseline_usdc6);
   const delta = balanceUsdc6 > baseline ? balanceUsdc6 - baseline : 0n;
-  const overpaid = delta > amount ? delta - amount : 0n;
+
+  /**
+   * CREDIT IS MONOTONIC — it must never decrease (SPEC §5b).
+   *
+   * `delta` is derived from the wallet's CURRENT balance, but that balance is
+   * legitimately drained to 0 once the sweep moves the payment to treasury.
+   * Writing `delta` unconditionally therefore erased the credited amount of any
+   * invoice still being watched (`routing`/`payment_verified`), and the pipeline
+   * — which derives `routed` from `received_usdc6` — then re-ran the remaining
+   * steps with routed=0. Credit is a recorded fact about a payment that
+   * happened, not a function of the wallet's present balance, so a verification
+   * pass may only ever RAISE it.
+   *
+   * Same reasoning for the overpayment: a flagged exception must not be wiped by
+   * a later sweep, so both the amount and the flag are sticky.
+   */
+  const storedReceived = BigInt(inv.received_usdc6);
+  const credited = delta > storedReceived ? delta : storedReceived;
+  const storedOverpaid = BigInt(inv.overpaid_usdc6);
+  const computedOverpaid = credited > amount ? credited - amount : 0n;
+  const overpaid = computedOverpaid > storedOverpaid ? computedOverpaid : storedOverpaid;
+
   const anyPending = entries.some((e) => e.status === 'pending' || e.status === undefined);
 
   let status = inv.status;
   let unexpected = inv.unexpected_payment;
   if (inv.status === 'awaiting_payment' || inv.status === 'payment_reported') {
-    if (delta >= amount) status = 'payment_verified';
-    else if (delta > 0n) status = 'awaiting_payment';
+    if (credited >= amount) status = 'payment_verified';
+    else if (credited > 0n) status = 'awaiting_payment';
     else status = anyPending ? 'payment_reported' : 'awaiting_payment';
   } else if (
     (inv.status === 'completed' || inv.status === 'routing' || inv.status === 'payment_verified') &&
-    delta > BigInt(inv.received_usdc6)
+    delta > storedReceived
   ) {
     // Post-verification funds: never silently absorbed (SPEC §5c).
+    // KNOWN GAP: once the sweep has emptied the wallet this only catches a
+    // top-up LARGER than the original credit, because `delta` restarts from 0
+    // while the credit stays at its high-water mark. Closing it properly needs a
+    // `swept_usdc6` column so the expected balance is `credited - swept`;
+    // deliberately not built here (see PROGRESS.md 2026-07-23).
     unexpected = 1;
   }
 
@@ -394,13 +420,13 @@ export async function applyVerification(
   )
     .bind(
       invoiceId,
-      delta.toString(),
+      credited.toString(),
       overpaid.toString(),
-      overpaid > 0n ? 1 : 0,
+      overpaid > 0n || inv.overpaid ? 1 : 0,
       unexpected,
       status,
       JSON.stringify(entries),
     )
     .run();
-  return { status, receivedUsdc6: delta.toString() };
+  return { status, receivedUsdc6: credited.toString() };
 }

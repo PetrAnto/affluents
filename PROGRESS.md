@@ -177,7 +177,15 @@ confirm).
 
 ## How to resume
 cd ~/affluents && claude   →  "Read PROGRESS.md and continue."
-Worker deploy: cd worker && npx wrangler deploy (token in ../.env).
+**REQUIRED before every Worker deploy: `cd worker && npx tsc --noEmit`.**
+`wrangler deploy` does NOT typecheck — it bundles and ships whatever parses, so
+type errors reach production silently. This bit us on 2026-07-23: the
+`/api/internal/invoices/:id/retire` endpoint shipped with two TS2532 errors
+(`res[0].meta.changes` possibly undefined). It happened to work at runtime
+(D1 `batch` returns one result per statement) but nothing except the typecheck
+would have caught it. Run `npx vitest run` too — both are seconds.
+Worker deploy: cd worker && npx tsc --noEmit && npx wrangler deploy
+(token in ../.env).
 Orchestrator: pm2 status / pm2 logs affluents-orchestrator.
 Tests: npx vitest run (shared) · worker/test/claim-concurrency.mjs (needs
 BASE_URL + INTERNAL_API_KEY from .env).
@@ -310,3 +318,87 @@ BASE_URL + INTERNAL_API_KEY from .env).
   the orchestrator only logs the work summary when it CHANGES
   (`orchestrator/src/index.ts:40`) — silence is the steady state, not a stall;
   liveness was confirmed separately from the tsx child process's IO counters.
+
+## Credit-erasure bug found by a live test payment — fixed 2026-07-23
+Found by paying invoice **2026-010** (`inv_fdc341b808c6c36d96`, 1.00 USDC) for
+real on Arc testnet. Nothing in the unit suite caught it; only an end-to-end
+payment did. Worth remembering when weighing "it passes tests" against "it has
+been run".
+
+**The bug.** `applyVerification` (`worker/src/db.ts`) wrote
+`received_usdc6 = delta`, where `delta` is derived from the deposit wallet's
+CURRENT balance. That treats credit as recomputable from present state — but
+after the sweep moves the payment to treasury, the wallet is legitimately 0.
+
+Sequence: payment verified, credited 1000000, swept to treasury; the `earn`
+step then failed (`VAULT_ADDRESS` was malformed in `.env`, since fixed) leaving
+the invoice in `routing`; `pullWork` keeps `routing` watched; the watcher next
+observed `balance=0 baseline=0 delta=0` and **overwrote the credit with 0**.
+From then on `runPipeline` (`orchestrator/src/executor.ts:129-131`) derived
+`routed` from `received_usdc6`, computed `routed=0`, and Circle rejected the
+earn deposit with `ESTIMATION_ERROR: zero deposit` — every 15s, indefinitely.
+
+**The fix — credit is monotonic.** A verification pass may now only ever RAISE
+the credited amount: `credited = max(delta, stored)`. Credit is a recorded fact
+about a payment that happened, not a function of the wallet's present balance.
+The same stickiness applies to `overpaid_usdc6` and the `overpaid` flag — a
+sweep must not wipe a flagged exception (a `routing` invoice would have lost
+it; `completed` ones were never at risk since `pullWork` doesn't watch them).
+The status branch now tests `credited`, not `delta`, so a verified invoice
+can't be downgraded to `awaiting_payment` by a post-sweep zero balance.
+Deliberately server-side in the Worker: D1 is the state of record, so the
+invariant holds regardless of what any orchestrator version posts.
+`paid_txs` was never affected — it merges and dedupes by txHash, already
+monotonic.
+
+**KNOWN GAP — `swept_usdc6` (not built).** The "unexpected payment" check
+(SPEC §5c) compares `delta > received_usdc6`. Before the fix this worked
+post-sweep only by accident, because the credit had been wiped to 0. With
+monotonic credit, a post-sweep top-up SMALLER than the original credit is no
+longer flagged. Accepted knowingly: the window is narrow (only
+`routing`/`payment_verified` — `completed` invoices aren't watched at all) and
+far less harmful than the corruption it removes. Proper fix is a `swept_usdc6`
+column so expected balance is `credited - swept`; that's a migration, taken
+separately.
+
+**Journal-divergence guard** (`orchestrator/src/executor.ts`, `runStep`). The
+same incident left the `earn` journal row reading 150000 while the send used 0:
+`upsertExecutionIntent` is idempotent and returns an existing row untouched, so
+a retry that recomputes a different amount would move money the journal does
+not describe — and the journal is what a restart reconciles against. `runStep`
+now compares the recomputed amount against the journaled intent and THROWS
+rather than sending on a mismatch.
+
+**One-time operator repair — NOT a precedent.** Restoring the corrupted credit
+needed `received_usdc6` raised, which the new guard correctly forbids through
+the API. A permanent "raise the credited amount" endpoint is the wrong thing to
+carry in a payments API, so this was done as an operator action the same way
+migrations are applied — a single targeted statement, guard deployed FIRST so
+the corruption could not recur:
+```sql
+UPDATE invoices SET received_usdc6 = 1000000
+ WHERE id = 'inv_fdc341b808c6c36d96' AND received_usdc6 = 0 AND status = 'routing';
+```
+Self-guarding predicates so it could only fire against the exact observed
+corrupt state; reported `changes: 1`. The value is not a guess — the `sweep`
+execution row confirms 1000000 moved on-chain (`0x7b62974f79ba…`). Any future
+need for this is a signal to re-diagnose, not to add an endpoint.
+
+**Verified after the repair.** The pipeline resumed on the next tick and the
+guard proved itself live: at 17:02:46 the watcher posted
+`balance=0 baseline=0 delta=0 → status=routing`, the credit HELD at 1000000,
+and the same tick logged
+`routed=1000000 (spend 600000 → 552000 EURC, reserve 250000, earn 150000)`.
+`runStep` short-circuited the three confirmed steps; `earn` re-sent at 150000
+(matching its journaled intent, so the new divergence check passed) and
+confirmed as `0x70a4616989fe1d55`.
+- Ledger: spend 600000 USDC + reserve 250000 + earn 150000 = **1000000 exactly**
+  in 6-dec units, plus the 552000 EURC spend-leg FX output (the swap's output,
+  not a second claim on the USDC).
+- Invoice `completed`, `received_usdc6=1000000`, `overpaid_usdc6=0`,
+  4 ledger rows, deposit wallet `retired`, work queue back to
+  `reported=0 watching=0`.
+- Unit tests added (`worker/src/db.test.ts`, 5 cases) covering: first credit,
+  **credit unchanged when the sweep empties the wallet**, credit still rises on
+  genuine new funds, sticky overpayment across a zero balance, no status
+  downgrade. Confirmed meaningful — 3 of the 5 fail against the pre-fix code.

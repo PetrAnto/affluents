@@ -86,6 +86,22 @@ async function runStep(
 ): Promise<string> {
   const id = `${invoiceId}:${step}`;
   const row = await journalIntent(id, invoiceId, step, amountUsdc6.toString());
+
+  /**
+   * The journal is the truth a restart reconciles against, so the amount we are
+   * about to send MUST equal the amount journaled as the intent. `journalIntent`
+   * is idempotent and returns an existing row untouched, so a retry that
+   * recomputes a different amount would otherwise send one figure while the
+   * journal claims another — exactly what happened when the credit-erasure bug
+   * made a re-run recompute earn as 0 against a journaled 150000. Refuse loudly
+   * rather than move money the journal does not describe.
+   */
+  if (row.amount_usdc6 !== null && BigInt(row.amount_usdc6) !== amountUsdc6) {
+    throw new Error(
+      `journal divergence on ${id}: intent recorded ${row.amount_usdc6}, recomputed ${amountUsdc6} — refusing to send`,
+    );
+  }
+
   if (row.status === 'confirmed' && row.tx_hash) return row.tx_hash;
 
   let providerRef = row.provider_ref;
