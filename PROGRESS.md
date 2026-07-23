@@ -196,3 +196,48 @@ BASE_URL + INTERNAL_API_KEY from .env).
 - Note: the first request after `wrangler deploy` hit the previous version
   (404 on the new route) for a few seconds — re-check after ~30s before
   diagnosing a deploy as failed.
+
+## Deck assets regenerated with Chromium; deck now 9 slides — 2026-07-23
+- **Deck PDFs are now generated in-repo from `design/deck-print.html` via
+  Playwright/Chromium**, replacing the external WeasyPrint step. WeasyPrint is
+  no longer used for the deck: it did not render the web fonts or the CSS the
+  deck relies on. New procedure (tooling lives in `~/deck-tools`, OUTSIDE the
+  repo — never add node_modules/package.json to this repo):
+  - `npm i playwright && npx playwright install chromium` (the `--with-deps`
+    variant needs sudo/TTY and is not required on this VPS).
+  - `page.goto('file://.../design/deck-print.html', {waitUntil:'networkidle'})`,
+    wait 1500ms so Google Fonts finish, then
+    `page.pdf({printBackground:true, preferCSSPageSize:true,
+    width:'1920px', height:'1080px'})`.
+- Screenshots retaken at **deviceScaleFactor 2**, viewport 1440x832,
+  `waitUntil:'networkidle'` + 1s, written to `design/screenshots/`:
+  - `landing.png` 2880x1664 — viewport crop.
+  - `dashboard.png` 2880x2642 — **fullPage** (page is 1321 CSS px tall; the
+    832 viewport crop cut the invoice ledger).
+  - `03-payment.png` 2880x1704 — **fullPage**, from the LIVE page
+    `/pay/inv_dcc00e32c56f3f03e1` (invoice 2026-003, Meridian Studio, 1.00
+    USDC, Routed).
+- Correction recorded: the previous `03-payment.png` was a screenshot of the
+  local design prototype `design/payment.html`, not the live app — its
+  invoice "2026-014 · Meridian Studio · 100.00 USDC" is mock data and no such
+  invoice exists in D1, and the shot included the prototype's
+  "REVIEW ONLY / Awaiting / Verifying / Paid / Partial / Extra" state
+  switcher. Deck slides now use live-app captures only.
+- Deck grew **7 → 9 slides**: "The payment experience" added, then dashboard
+  and payment split onto dedicated slides with images constrained by
+  max-height/max-width so any capture aspect ratio fits. This fixed a real
+  overflow: with the fullPage dashboard on the old combined slide, content
+  measured 1392px in the 1080px box and silently clipped the ledger and the
+  whole routing caption. Both `design/deck-print.html` and
+  `worker/src/pages/deck.ts` carry all 9 slides.
+- Slide 4 figures verified against the live D1 ledger before publishing —
+  spend 1.80 USDC / 1.656 EURC, reserve 0.75, earn 0.45 across 4 rows each;
+  1.80 + 0.75 + 0.45 = 3.000000 exactly in 6-dec units. The 0.50 USDC
+  `exception_hold` (invoice 2026-005 overpayment) is correctly excluded from
+  the routed total.
+- Verified after generation: all 9 slides measure scrollHeight 1080 in the
+  1080 box (no clipping anywhere); PDF root /Pages /Count 9 with 9 /Type /Page
+  objects; MediaBox [0 0 1440 810] pt = 1920x1080 px.
+- Gotcha confirmed again: the first `/deck` read after `wrangler deploy`
+  served a stale edge-cached copy (8 slides); a cache-busted request returned
+  9. Re-check with `?cb=$RANDOM` before diagnosing a deploy as failed.
