@@ -2,15 +2,22 @@ import { createPublicClient, erc20Abi, http } from 'viem';
 import { config } from './config';
 import { runPipeline } from './executor';
 import { ping, pullWork } from './internalApi';
+import { createPacedRpc, createRpcQueue } from './pacedRpc';
 import { processInvoice } from './watcher';
 
 function log(msg: string): void {
   console.log(`${new Date().toISOString()} ${msg}`);
 }
 
-const client = createPublicClient({
-  transport: http(config.arcRpcUrl),
+// retryCount 0: viem's default 3-retry backoff would re-burst on a rate-limit
+// error and defeat the pacing. The queue owns retries, spaced by the same gap.
+const rawClient = createPublicClient({
+  transport: http(config.arcRpcUrl, { retryCount: 0 }),
 });
+// Arc testnet allows ~1 req/s per IP (measured 2026-07-23). Space requests
+// 1100ms apart so a full tick's reads stay under the limit instead of bursting.
+const rpcQueue = createRpcQueue(config.rpcMinGapMs);
+const client = createPacedRpc(rawClient, rpcQueue);
 
 async function startupChecks(): Promise<void> {
   // Chain connectivity: right chain, live blocks, ERC-20 view answering.

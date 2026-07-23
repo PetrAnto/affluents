@@ -1,10 +1,8 @@
-import type { createPublicClient } from 'viem';
 import { erc20Abi } from 'viem';
 import { config } from './config';
 import { postVerification, type WorkItem } from './internalApi';
+import type { Rpc } from './pacedRpc';
 import { TRANSFER_TOPIC, verifyPaymentTx } from './verifier';
-
-type Rpc = ReturnType<typeof createPublicClient>;
 
 interface PaidTxEntry {
   txHash: string;
@@ -151,6 +149,15 @@ export async function processInvoice(rpc: Rpc, item: WorkItem): Promise<boolean>
     .filter((e) => e.status === 'verified')
     .concat(txResults.filter((r) => r.result === 'verified') as PaidTxEntry[])
     .reduce((t, e) => t + BigInt(e.amountUsdc6 ?? 0), 0n);
+  // Delta-gated audit scan: the eth_getLogs walk exists ONLY to locate funding
+  // txs (and their hashes) when the balance shows more than the recorded txs
+  // explain — it reconciles nothing else. So a wallet at (or below) baseline
+  // has nothing to find and skips the whole chunked scan. This is the common
+  // case every tick — an unpaid invoice awaiting funds, or a post-sweep wallet
+  // sitting at 0 (delta 0, baseline 0) whose credit the Worker guard already
+  // preserves — and it keeps such a wallet's per-tick cost at a single
+  // balanceOf call instead of balanceOf + up to SCAN_MAX_CHUNKS_PER_TICK
+  // getLogs requests. `delta > explained` already implies delta > 0.
   if (delta > explained) {
     const known = new Set(entries.map((e) => e.txHash).concat(txResults.map((r) => r.txHash)));
     try {

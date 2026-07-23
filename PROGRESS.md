@@ -402,3 +402,78 @@ confirmed as `0x70a4616989fe1d55`.
   **credit unchanged when the sweep empties the wallet**, credit still rises on
   genuine new funds, sticky overpayment across a zero balance, no status
   downgrade. Confirmed meaningful — 3 of the 5 fail against the pre-fix code.
+
+## Hardening: fail-fast config validation + RPC pacing — 2026-07-23
+Two items from the credit-erasure incident, both shipped and verified with a
+live test payment.
+
+**ITEM 1 — fail-fast config validation (`orchestrator/src/configValidation.ts`).**
+The malformed `VAULT_ADDRESS` that started the earlier incident passed the only
+gate it faced (truthiness), and the pipeline then moved money through sweep, fx
+and reserve before failing. Now `config.ts` validates at module load — before
+any work — every address and wallet-id the orchestrator uses, including the
+role vars `executor.ts` reads directly from `process.env`: USDC_ADDRESS,
+EURC_ADDRESS, TREASURY/SPEND/RESERVE_WALLET_ADDRESS, VAULT_ADDRESS, and
+TREASURY/SPEND/RESERVE_WALLET_ID. Addresses must match `^0x[0-9a-fA-F]{40}$`;
+wallet ids must be UUIDs. On failure it logs the offending variable NAMES and
+reasons (never values — .env holds secrets and pm2 logs get pasted into chats;
+it prints only a length hint, which is what distinguishes a typo from the
+incident's 60+ char collision) and `process.exit(1)`.
+- **Decision: a bad or partial role var is FATAL at boot**, replacing the old
+  behaviour where `roleConfigFromEnv` returned null and the pipeline silently
+  no-ceased. A silent no-op *after* a payment is verified is its own trap — the
+  operator's stated preference and the right call. A COMPLETELY absent role
+  config is still the valid pre-Circle-setup state (warns, does not exit); a
+  PARTIALLY set one is fatal (a half-configured deployment).
+- Unit test asserts the exact collided string from the incident
+  (`VAULT_ADDRESS=0x2c22…ee0USDC_ADDRESS=0x3600…`) is rejected, plus that no
+  error message ever contains a value.
+
+**ITEM 2 — RPC rate limit ROOT-CAUSED and fixed (demo-safe).**
+Measured the limit directly (2026-07-23) instead of guessing: a 40-request
+sequential burst to https://rpc.testnet.arc.network returned **1 ok / 39
+`request limit reached`**; at a 1000ms gap 6/6 succeeded, at 500ms 3/6, at
+200ms 2/6. **The limit is ~1 request/second per IP — a function of request
+SPACING, not poll frequency or per-tick count.** This is why last session's
+`POLL_INTERVAL_MS` change did nothing: the orchestrator fires its per-wallet
+reads back-to-back, so three watched wallets = three balanceOf calls in a
+burst = two failures every tick regardless of interval. The delta-gated-scan
+theory was only half right — skipping `eth_getLogs` helps, but three *balanceOf*
+calls alone already burst past the limit.
+- Fix = **request pacing** (`orchestrator/src/rpcQueue.ts`,
+  `pacedRpc.ts`): a serialising queue enforces a min gap
+  (`RPC_MIN_GAP_MS`, default 1100ms) between the start of consecutive Arc RPC
+  requests, across concurrent callers, and owns rate-limit retries (re-queued
+  so they are spaced, not bursted). viem's transport `retryCount` is set to 0
+  so its default 3-retry backoff can't re-burst underneath the queue. Every RPC
+  the watcher/startup uses now routes through this.
+- Also did ITEM 2 as specified — an explicit delta-gated scan in `watcher.ts`:
+  a wallet at/below baseline (delta 0) skips the `eth_getLogs` chunks entirely,
+  cutting its per-tick cost to a single balanceOf. Verified first that the scan
+  reconciles NOTHING beyond locating new funding txs and their hashes, so
+  skipping it at delta 0 is correctness-neutral. Covers the common cases: an
+  unpaid invoice awaiting funds, and a post-sweep wallet sitting at 0 (whose
+  credit the Worker guard from earlier today already preserves).
+- Unit tests: zero-delta wallet issues exactly 1 RPC call/tick and runs no
+  scan; nonzero-delta wallet still performs the full scan; queue spacing,
+  spaced retries, non-rate-limit errors NOT retried, and chain-survives-failure.
+
+**Live verification (the number that matters: three watched wallets).**
+Created 2026-011/012/013 at once → `watching=3`, the exact load that previously
+produced continuous `request limit reached`. Ran **3.5 minutes with ZERO RPC
+errors** (error.log stayed empty; liveness confirmed via the child process's IO
+counters, since the work summary only logs on change). Then paid **2026-011**
+1.00 USDC for real (deployer ops EOA, `erc20_direct`, tx `0x877b0c44…`); the
+balance-delta watcher detected it (the page report never arrived — fallback
+path), verified to `payment_verified`, and routed to `completed`:
+- Ledger: spend 600000 USDC + reserve 250000 + earn 150000 = **1000000 exactly**
+  (plus 552000 EURC spend-leg FX output). Invoice `completed`, wallet `retired`.
+- 2026-012/013 retired afterwards via the retire endpoint; queue back to
+  `reported=0 watching=0`, no errors for the entire window.
+- Confirmation the limit is per-IP and shared: a manual balance probe fired
+  WHILE the orchestrator was polling hit `request limit reached`; spaced, it
+  succeeded — exactly the contention the pacing queue now serialises away.
+- One-off payment used a throwaway script kept OUTSIDE the repo (it moves
+  money via DEPLOYER_PRIVATE_KEY); not committed.
+
+App Kit / live FX deliberately NOT started this session.
