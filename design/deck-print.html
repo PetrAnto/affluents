@@ -19,10 +19,9 @@
     font-family:'Inter',system-ui,sans-serif;position:relative;
     padding:100px 140px;overflow:hidden;margin:0;
   }
+  .slide:last-of-type{page-break-after:auto;}
   .display{font-family:'EB Garamond',Georgia,serif;font-weight:500;}
   .label{font-size:22px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted);}
-  .hairline{border:none;border-top:1.5px solid var(--contour);}
-  .slide:last-of-type{page-break-after:auto;}
   .footer{position:absolute;left:140px;right:140px;bottom:56px;font-size:22px;color:var(--muted);}
   .footer .r{float:right;}
   .card{background:var(--surface);border:1.5px solid var(--contour);border-radius:8px;overflow:hidden;display:inline-block;}
@@ -30,7 +29,7 @@
   .cols{display:table;width:100%;}
   .col{display:table-cell;vertical-align:top;}
   .row{padding:26px 0;border-top:1.5px solid var(--contour);}
-  .row:last-of-type,.row.end{border-bottom:1.5px solid var(--contour);}
+  .row.end{border-bottom:1.5px solid var(--contour);}
 </style>
 </head>
 <body>
@@ -93,35 +92,44 @@
 
 <section class="slide">
   <span class="label">Working today on Arc testnet</span>
-  <div class="cols" style="margin-top:36px;">
-    <div class="col" style="width:900px;">
-      <div class="display" style="font-size:50px;line-height:1.2;">Four invoices routed end-to-end.<br>Not mocked, not local.</div>
-    </div>
-    <div class="col" style="padding-left:100px;font-size:27px;line-height:1.55;vertical-align:middle;color:var(--muted);">
-      invoice → link + QR → MetaMask payment →<br>on-chain verification → automatic routing
-    </div>
+  <div class="display" style="font-size:62px;margin-top:44px;line-height:1.15;">
+    Four invoices routed end-to-end.<br>Not mocked, not local.
   </div>
-  <div style="text-align:center;margin-top:36px;">
-    <div class="card"><img src="./screenshots/dashboard.png" alt="Affluents dashboard — buckets, income step chart, split rules, invoice ledger" style="width:1000px;"></div>
-    <p style="margin-top:20px;font-size:26px;">
-      <strong>3.00 USDC</strong> routed as
-      <strong style="color:var(--river);">1.656 EURC</strong> Spend ·
-      <strong style="color:var(--reserve);">0.75</strong> Reserve ·
-      <strong style="color:var(--earn);">0.45</strong> Earn
-      <span style="color:var(--muted);">&nbsp;— exact to the micro-dollar, linked to ArcScan</span>
-    </p>
+  <div class="cols" style="margin-top:72px;">
+    <div class="col" style="width:820px;font-size:29px;line-height:1.6;color:var(--muted);">
+      <p class="row" style="padding:30px 0;">invoice → payment link + QR → MetaMask payment → on-chain verification → automatic routing</p>
+      <p class="row end" style="padding:30px 0;">Every movement linked to ArcScan. Conservation verified against both the ledger and on-chain balances.</p>
+    </div>
+    <div class="col" style="padding-left:120px;">
+      <p style="font-size:26px;color:var(--muted);">Across four invoices</p>
+      <p class="display" style="font-size:64px;margin-top:14px;">3.00 USDC in</p>
+      <p style="font-size:34px;line-height:1.9;margin-top:26px;">
+        <strong style="color:var(--river);">1.656 EURC</strong> Spend<br>
+        <strong style="color:var(--reserve);">0.75 USDC</strong> Reserve<br>
+        <strong style="color:var(--earn);">0.45 USDC</strong> Earn
+      </p>
+      <p style="font-size:24px;color:var(--muted);margin-top:22px;">Exact to the micro-dollar.</p>
+    </div>
   </div>
   <div class="footer"><span>affluents</span><span class="r">04</span></div>
 </section>
 
-<section class="slide">
-  <span class="label">The payment experience</span>
-  <div class="display" style="font-size:50px;margin-top:36px;">What the client sees — and what happens after they pay.</div>
-  <div style="text-align:center;margin-top:36px;">
-    <div class="card"><img src="./screenshots/03-payment.png" alt="Affluents payment page — paid invoice with routing summary" style="width:1000px;"></div>
-    <p style="margin-top:20px;font-size:26px;color:var(--muted);">A paid invoice with its routing summary: verified on-chain, then split into Spend, Reserve, and Earn — automatically.</p>
+<section class="slide" style="padding:70px 140px;">
+  <span class="label">The dashboard</span>
+  <span class="label" style="float:right;">Live · Arc testnet</span>
+  <div style="text-align:center;margin-top:26px;">
+    <div class="card"><img src="./screenshots/dashboard.png" alt="Affluents dashboard — buckets, income chart, split rules, invoice ledger" style="max-height:800px;max-width:1560px;"></div>
   </div>
-  <div class="footer"><span>affluents</span><span class="r">05</span></div>
+  <div class="footer"><span>Buckets, income over time, split rules, and every invoice with its ArcScan links.</span><span class="r">05</span></div>
+</section>
+
+<section class="slide" style="padding:70px 140px;">
+  <span class="label">The payment experience</span>
+  <span class="label" style="float:right;">Live · Arc testnet</span>
+  <div style="text-align:center;margin-top:26px;">
+    <div class="card"><img src="./screenshots/03-payment.png" alt="Affluents payment page — paid invoice with routing summary" style="max-height:800px;max-width:1560px;"></div>
+  </div>
+  <div class="footer"><span>A real paid invoice: verified on-chain, then split into Spend, Reserve, and Earn — automatically.</span><span class="r">06</span></div>
 </section>
 
 <section class="slide">
@@ -140,7 +148,7 @@
       <p class="row end" style="padding:28px 0;">29 unit tests, plus a deposit-wallet concurrency test.</p>
     </div>
   </div>
-  <div class="footer"><span>affluents</span><span class="r">06</span></div>
+  <div class="footer"><span>affluents</span><span class="r">07</span></div>
 </section>
 
 <section class="slide">
@@ -152,7 +160,7 @@
     <p class="row" style="padding:32px 0;"><strong>Circle Gas Station</strong> — every sweep, transfer, and vault deposit sponsored; no wallet holds gas</p>
     <p class="row end" style="padding:32px 0;"><strong>USDC + EURC</strong> — pay in USDC, hold Spend in EURC; multi-currency by default</p>
   </div>
-  <div class="footer"><span>affluents</span><span class="r">07</span></div>
+  <div class="footer"><span>affluents</span><span class="r">08</span></div>
 </section>
 
 <section class="slide">
