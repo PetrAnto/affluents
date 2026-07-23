@@ -242,7 +242,7 @@ BASE_URL + INTERNAL_API_KEY from .env).
   served a stale edge-cached copy (8 slides); a cache-busted request returned
   9. Re-check with `?cb=$RANDOM` before diagnosing a deploy as failed.
 
-## Stale invoice cleanup + RPC rate-limit fix — 2026-07-23
+## Stale invoice cleanup + unresolved RPC rate limit — 2026-07-23
 - **Retired the four never-paid invoices** so the orchestrator stops polling
   them: 2026-001 (`awaiting_wallet`, no wallet), 2026-007 (PetrAnto, 20.00),
   2026-008 (Test Client, 100.00), 2026-009 (Test Client 20260723, 5.00). All
@@ -270,16 +270,43 @@ BASE_URL + INTERNAL_API_KEY from .env).
   fit this job: it selects only `label LIKE 'concurrency-test-%'` (matches none
   of these invoices) and it hard-DELETEs `deposit_wallets` rows rather than
   releasing them to `free`. Left as-is for the concurrency test.
-- **RPC rate limit found at 5s polling.** With three watched invoices the
-  orchestrator's `USDC.balanceOf` reads against
-  https://rpc.testnet.arc.network returned `RPC Request failed … Details:
-  request limit reached`, logged as `verify <id> failed`. Verification is
-  balance-delta based, so this stalled detection rather than corrupting state.
-  **`POLL_INTERVAL_MS=15000` is now set** in the repo-root `.env` (default in
-  `orchestrator/src/config.ts` remains 5000); confirmed live — successive
-  orchestrator log lines are 15s apart.
+- **RPC rate limiting is UNRESOLVED — `POLL_INTERVAL_MS=15000` did NOT fix
+  it.** Correcting an earlier claim in this entry: 15s polling was assumed to
+  be the fix, but the logs disprove it. The orchestrator restarted at 14:33:03
+  already carrying `POLL_INTERVAL_MS=15000`, and `RPC Request failed … Details:
+  request limit reached` continued unbroken at exactly 15s spacing from
+  14:34:22 through 14:52:57 (e.g. 14:34:22.801 / 14:34:37.943 / 14:34:53.105,
+  ~19 minutes, two wallets per tick). The errors stopped at 14:53:12 — the
+  moment `watching` reached 0 and the orchestrator stopped issuing `eth_call`
+  at all. **The limit is therefore untested at 15s under load; the current
+  clean logs prove only that an idle orchestrator makes no failing requests.**
+  It will very likely reappear the next time an invoice is being watched.
+  `POLL_INTERVAL_MS=15000` stays set (default in `orchestrator/src/config.ts`
+  remains 5000) — 15s is a sane interval regardless, just not a fix.
+- Likely cause is our own request volume per tick, not an IP-level block:
+  - A manual `curl` `eth_call` `balanceOf` to the same
+    https://rpc.testnet.arc.network from this VPS returns HTTP 200 — though
+    note this was run while `watching=0`, i.e. with no orchestrator load, so
+    it shows the endpoint is reachable, not that it answers during the burst.
+  - Each tick, per watched wallet, `watcher.ts` issues `getBlockNumber` + up to
+    `SCAN_MAX_CHUNKS_PER_TICK = 5` `eth_getLogs` chunks + `balanceOf` — ~7
+    requests per wallet, ~21 per tick with three invoices, all in a burst.
+    viem's `http()` transport is used with default retry (3 attempts with
+    backoff), multiplying that on failure. The failing call logged is
+    `balanceOf`, but it is plausibly the victim of the `eth_getLogs` burst
+    ahead of it rather than the cause.
+  - Not yet investigated: whether Arc's limit is per-second burst or a longer
+    window, and whether the other official RPCs (drpc / blockdaemon /
+    quicknode, per CLAUDE.md) have different quotas.
+  - Candidate fixes, none implemented: serialise the per-wallet scan across
+    ticks instead of bursting, lower `SCAN_MAX_CHUNKS_PER_TICK`, skip the audit
+    scan entirely while the balance delta is 0 (nothing to reconcile), add
+    explicit backoff, or rotate across the official RPCs.
+- Verification is balance-delta based, so the failures stalled detection rather
+  than corrupting state — no ledger or invoice row was affected.
 - Post-cleanup state verified: `reported=0 watching=0 freeWallets=6`, wallet
-  pool back to 6 free, no RPC errors for over a minute. Note the orchestrator
-  only logs the work summary when it CHANGES
+  pool back to 6 free, and no RPC errors since 14:53:12 — but see above: that
+  is because nothing is being watched, not because the limit was fixed. Note
+  the orchestrator only logs the work summary when it CHANGES
   (`orchestrator/src/index.ts:40`) — silence is the steady state, not a stall;
   liveness was confirmed separately from the tsx child process's IO counters.
