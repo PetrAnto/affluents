@@ -23,6 +23,7 @@ import {
 import { FAVICON_SVG } from './html';
 import { createPage } from './pages/create';
 import { dashboardPage } from './pages/dashboard';
+import { deckPage } from './pages/deck';
 import { landingPage } from './pages/landing';
 import { payPage } from './pages/pay';
 import type { Env, InvoiceRow } from './types';
@@ -30,6 +31,8 @@ import type { Env, InvoiceRow } from './types';
 const app = new Hono<{ Bindings: Env }>();
 
 const HTML_HEADERS = { 'Content-Type': 'text/html; charset=utf-8' };
+
+const DECK_PDF_URL = 'https://raw.githubusercontent.com/PetrAnto/affluents/main/design/checkpoint2-deck.pdf';
 
 function timingSafeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder();
@@ -107,6 +110,17 @@ function invoiceJson(env: Env, inv: InvoiceRow, origin: string) {
 
 app.get('/', (c) => c.body(landingPage(), 200, HTML_HEADERS));
 app.get('/create', (c) => c.body(createPage(), 200, HTML_HEADERS));
+app.get('/deck', (c) => c.body(deckPage(), 200, HTML_HEADERS));
+
+/** The Checkpoint 2 PDF, re-served from the public repo so it opens in-browser. */
+app.get('/deck.pdf', async (c) => {
+  const upstream = await fetch(DECK_PDF_URL);
+  if (!upstream.ok) return c.body('Deck PDF unavailable', 502, { 'Content-Type': 'text/plain; charset=utf-8' });
+  return c.body(await upstream.arrayBuffer(), 200, {
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': 'inline; filename="affluents-checkpoint2.pdf"',
+  });
+});
 
 app.get('/favicon.svg', (c) => c.body(FAVICON_SVG, 200, { 'Content-Type': 'image/svg+xml' }));
 app.get('/favicon.ico', (c) => c.body(FAVICON_SVG, 200, { 'Content-Type': 'image/svg+xml' }));

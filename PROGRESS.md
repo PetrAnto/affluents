@@ -1,5 +1,5 @@
 # PROGRESS — Affluents
-Updated: 2026-07-16 15:00 UTC
+Updated: 2026-07-23 12:40 UTC
 Phase: 3 — Split pipeline CORE COMPLETE on testnet (fallback FX adapter)
 → next: Checkpoint 2 submission draft (due Jul 26), then Phase 4
 Live Worker URL: https://affluents.money (canonical, custom domain + www)
@@ -181,3 +181,18 @@ Worker deploy: cd worker && npx wrangler deploy (token in ../.env).
 Orchestrator: pm2 status / pm2 logs affluents-orchestrator.
 Tests: npx vitest run (shared) · worker/test/claim-concurrency.mjs (needs
 BASE_URL + INTERNAL_API_KEY from .env).
+
+## Checkpoint 2 deck served from the Worker — 2026-07-23
+- `worker/src/pages/deck.ts` (7 slides, 1920x1080, scale-to-fit; screenshots
+  loaded from the public repo) wired into `worker/src/index.ts`:
+  - `GET /deck` — server-rendered HTML deck, HTML_HEADERS.
+  - `GET /deck.pdf` — fetches design/checkpoint2-deck.pdf from raw.github
+    usercontent and re-serves the bytes with Content-Type application/pdf +
+    Content-Disposition inline, so judges get an in-browser view instead of a
+    forced download. Upstream failure → 502 plain text.
+- Deployed (version b5d06f7f). Verified live: /deck 200 text/html with 7
+  `class="slide"` blocks · /deck.pdf 200 application/pdf, body starts %PDF-1.7
+  · regression check /, /create and /pay/inv_03ebe9199588b316d9 still 200.
+- Note: the first request after `wrangler deploy` hit the previous version
+  (404 on the new route) for a few seconds — re-check after ~30s before
+  diagnosing a deploy as failed.
