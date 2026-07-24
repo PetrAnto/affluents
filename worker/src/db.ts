@@ -154,7 +154,28 @@ export async function getDashboardData(env: Env) {
   const recv = await env.DB.prepare(`SELECT COALESCE(SUM(received_usdc6), 0) AS t FROM invoices`).first<{ t: number }>();
   totals.totalReceivedUsdc6 = BigInt(recv?.t ?? 0);
 
-  return { totals, invoices: invoices.results, rule, exceptions: exceptions.results };
+  // FX journal surfaces: halted legs ("FX pending" + indicative ECB figure)
+  // and the rate source of the most recent completed conversion (labels the
+  // Spend card "demo rate" vs live). Guarded: a Worker deployed ahead of
+  // migration 0003 must degrade to the pre-FX dashboard, not 500.
+  let fxHalted: Array<{ invoice_id: string; amount_in_usdc6: number; oracle_rate_ppm: number | null; display_no: string | null; label: string | null }> = [];
+  let fxLatestSource: 'appkit' | 'demo' | null = null;
+  try {
+    const [haltedRes, latestRes] = await Promise.all([
+      env.DB.prepare(
+        `SELECT fi.invoice_id, fi.amount_in_usdc6, fi.oracle_rate_ppm, i.display_no, i.label
+         FROM fx_intents fi JOIN invoices i ON i.id = fi.invoice_id
+         WHERE fi.state = 'halted' ORDER BY fi.updated_at DESC LIMIT 20`,
+      ).all<{ invoice_id: string; amount_in_usdc6: number; oracle_rate_ppm: number | null; display_no: string | null; label: string | null }>(),
+      env.DB.prepare(`SELECT rate_source FROM fx_intents WHERE state = 'complete' ORDER BY updated_at DESC LIMIT 1`).first<{ rate_source: 'appkit' | 'demo' }>(),
+    ]);
+    fxHalted = haltedRes.results;
+    fxLatestSource = latestRes?.rate_source ?? null;
+  } catch {
+    /* fx journal not migrated yet */
+  }
+
+  return { totals, invoices: invoices.results, rule, exceptions: exceptions.results, fxHalted, fxLatestSource };
 }
 
 // ---- execution journal + completion (orchestrator only) ----
@@ -252,6 +273,251 @@ export async function completeInvoice(env: Env, invoiceId: string, entries: Ledg
   );
   await env.DB.batch(stmts);
   return true;
+}
+
+// ---- FX journal (live App Kit FX, Decision 4) ----
+//
+// The swap leg is journaled in its own two-phase journal: `fx_intents` BEFORE
+// kit.swap (with the derived stopLimit as the durable commitment), `fx_results`
+// with on-chain actuals after. `fx_attempts` is the append-only ladder history.
+// The Worker is the state of record, so every guard here is server-side and
+// holds regardless of what any orchestrator version posts:
+//   - an intent is immutable once written, except state transitions and ladder
+//     updates (tolerance/estimate/floor) while still 'pending';
+//   - a result write requires a matching PENDING intent, an amount_in equal to
+//     the journaled intent (divergence check), and an amount_out inside
+//     [stop_limit, estimated_out × 1.001] (Decision 5 acceptance band);
+//   - result + state='complete' + attempt outcome land in one atomic batch.
+
+export interface FxIntentRow {
+  id: string;
+  invoice_id: string;
+  amount_in_usdc6: number;
+  estimated_out_eurc6: number;
+  stop_limit_eurc6: number;
+  tolerance_bps: number;
+  rate_source: 'appkit' | 'demo';
+  oracle_rate_ppm: number | null;
+  oracle_deviation_bps: number | null;
+  estimated_at: string;
+  estimated_block: number | null;
+  pre_swap_eurc6: number | null;
+  state: 'pending' | 'complete' | 'halted';
+}
+
+export interface FxAttemptRow {
+  id: number;
+  intent_id: string;
+  attempt_no: number;
+  tolerance_bps: number;
+  estimated_out_eurc6: number;
+  stop_limit_eurc6: number;
+  outcome: 'dispatched' | 'success' | 'stop_limit_not_met' | 'error';
+  error_code: string | null;
+}
+
+export interface FxResultRow {
+  intent_id: string;
+  invoice_id: string;
+  amount_out_eurc6: number;
+  tx_hash: string;
+  fees_usdc6: number;
+  discovered_by: 'swap' | 'reconciliation';
+  completed_at: string;
+}
+
+export interface FxIntentInput {
+  id: string;
+  invoiceId: string;
+  amountInUsdc6: string;
+  estimatedOutEurc6: string;
+  stopLimitEurc6: string;
+  toleranceBps: number;
+  rateSource: 'appkit' | 'demo';
+  oracleRatePpm?: string | null;
+  oracleDeviationBps?: number | null;
+  estimatedAt: string;
+  estimatedBlock?: string | null;
+  preSwapEurc6?: string | null;
+}
+
+export interface FxIntentState {
+  intent: FxIntentRow;
+  attempts: FxAttemptRow[];
+  result: FxResultRow | null;
+}
+
+export async function getFxIntentState(env: Env, id: string): Promise<FxIntentState | null> {
+  const intent = await env.DB.prepare(`SELECT * FROM fx_intents WHERE id = ?1`).bind(id).first<FxIntentRow>();
+  if (!intent) return null;
+  const [attempts, result] = await Promise.all([
+    env.DB.prepare(`SELECT * FROM fx_attempts WHERE intent_id = ?1 ORDER BY attempt_no`).bind(id).all<FxAttemptRow>(),
+    env.DB.prepare(`SELECT * FROM fx_results WHERE intent_id = ?1`).bind(id).first<FxResultRow>(),
+  ]);
+  return { intent, attempts: attempts.results, result: result ?? null };
+}
+
+/**
+ * Journal an FX intent BEFORE the swap (idempotent per id): an existing intent
+ * is returned untouched — the orchestrator compares amounts and reconciles
+ * rather than re-estimating (Decision 1/4). Creating the intent also writes
+ * ladder attempt #1 as 'dispatched'.
+ */
+export async function upsertFxIntent(env: Env, input: FxIntentInput): Promise<FxIntentState> {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO fx_intents
+         (id, invoice_id, amount_in_usdc6, estimated_out_eurc6, stop_limit_eurc6, tolerance_bps,
+          rate_source, oracle_rate_ppm, oracle_deviation_bps, estimated_at, estimated_block, pre_swap_eurc6)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+    ).bind(
+      input.id,
+      input.invoiceId,
+      input.amountInUsdc6,
+      input.estimatedOutEurc6,
+      input.stopLimitEurc6,
+      input.toleranceBps,
+      input.rateSource,
+      input.oracleRatePpm ?? null,
+      input.oracleDeviationBps ?? null,
+      input.estimatedAt,
+      input.estimatedBlock ?? null,
+      input.preSwapEurc6 ?? null,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO fx_attempts (intent_id, attempt_no, tolerance_bps, estimated_out_eurc6, stop_limit_eurc6)
+       SELECT id, 1, tolerance_bps, estimated_out_eurc6, stop_limit_eurc6 FROM fx_intents WHERE id = ?1`,
+    ).bind(input.id),
+  ]);
+  const state = await getFxIntentState(env, input.id);
+  if (!state) throw new Error('fx intent missing after insert');
+  return state;
+}
+
+/**
+ * Ladder update (Decision 2): a retry re-estimates at a wider tolerance. Only
+ * a PENDING intent can be laddered; amount_in and rate_source never change.
+ * Appends the attempt row (idempotent via UNIQUE (intent_id, attempt_no)).
+ */
+export async function ladderFxIntent(
+  env: Env,
+  id: string,
+  patch: {
+    attemptNo: number;
+    toleranceBps: number;
+    estimatedOutEurc6: string;
+    stopLimitEurc6: string;
+    estimatedAt: string;
+    estimatedBlock?: string | null;
+    preSwapEurc6?: string | null;
+  },
+): Promise<FxIntentState | 'not_pending' | null> {
+  const intent = await env.DB.prepare(`SELECT state FROM fx_intents WHERE id = ?1`).bind(id).first<{ state: string }>();
+  if (!intent) return null;
+  if (intent.state !== 'pending') return 'not_pending';
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE fx_intents SET
+         tolerance_bps = ?2, estimated_out_eurc6 = ?3, stop_limit_eurc6 = ?4,
+         estimated_at = ?5, estimated_block = COALESCE(?6, estimated_block),
+         pre_swap_eurc6 = COALESCE(?7, pre_swap_eurc6),
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = ?1 AND state = 'pending'`,
+    ).bind(id, patch.toleranceBps, patch.estimatedOutEurc6, patch.stopLimitEurc6, patch.estimatedAt, patch.estimatedBlock ?? null, patch.preSwapEurc6 ?? null),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO fx_attempts (intent_id, attempt_no, tolerance_bps, estimated_out_eurc6, stop_limit_eurc6)
+       VALUES (?1, ?2, ?3, ?4, ?5)`,
+    ).bind(id, patch.attemptNo, patch.toleranceBps, patch.estimatedOutEurc6, patch.stopLimitEurc6),
+  ]);
+  return await getFxIntentState(env, id);
+}
+
+/** Record how a dispatched attempt ended (failure paths; success lands with the result). */
+export async function patchFxAttempt(
+  env: Env,
+  intentId: string,
+  attemptNo: number,
+  outcome: 'stop_limit_not_met' | 'error',
+  errorCode?: string,
+): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE fx_attempts SET outcome = ?3, error_code = COALESCE(?4, error_code)
+     WHERE intent_id = ?1 AND attempt_no = ?2`,
+  )
+    .bind(intentId, attemptNo, outcome, errorCode ?? null)
+    .run();
+  return res.meta.changes > 0;
+}
+
+/** Ladder exhausted or estimate refused: the leg stays visible as 'halted'. */
+export async function haltFxIntent(env: Env, id: string): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `UPDATE fx_intents SET state = 'halted', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = ?1 AND state = 'pending'`,
+  )
+    .bind(id)
+    .run();
+  return res.meta.changes > 0;
+}
+
+export interface FxResultInput {
+  intentId: string;
+  invoiceId: string;
+  amountInUsdc6: string; // divergence check only — must equal the journaled intent
+  amountOutEurc6: string;
+  txHash: string;
+  feesUsdc6?: string;
+  discoveredBy: 'swap' | 'reconciliation';
+  completedAt: string;
+}
+
+export type FxResultOutcome =
+  | { ok: true; result: FxResultRow; idempotent: boolean }
+  | { ok: false; status: 404 | 409; reasons: string[] };
+
+export async function writeFxResult(env: Env, input: FxResultInput): Promise<FxResultOutcome> {
+  const state = await getFxIntentState(env, input.intentId);
+  if (!state) return { ok: false, status: 404, reasons: ['fx intent not found'] };
+  const { intent } = state;
+
+  // Idempotent re-post of the same discovered result (restart re-runs).
+  if (state.result) {
+    if (state.result.tx_hash === input.txHash && String(state.result.amount_out_eurc6) === input.amountOutEurc6) {
+      return { ok: true, result: state.result, idempotent: true };
+    }
+    return { ok: false, status: 409, reasons: [`a different result is already journaled (tx ${state.result.tx_hash})`] };
+  }
+
+  const reasons: string[] = [];
+  if (intent.state !== 'pending') reasons.push(`intent state is '${intent.state}', not 'pending'`);
+  // Divergence check (Decision 4): the executed amount must be the journaled one.
+  if (String(intent.amount_in_usdc6) !== input.amountInUsdc6) {
+    reasons.push(`amount_in ${input.amountInUsdc6} differs from journaled intent ${intent.amount_in_usdc6}`);
+  }
+  // Acceptance band (Decision 5): stop_limit <= actual <= estimate * 1.001.
+  const out = BigInt(input.amountOutEurc6);
+  const floor = BigInt(intent.stop_limit_eurc6);
+  const ceil = (BigInt(intent.estimated_out_eurc6) * 10010n) / 10000n;
+  if (out < floor) reasons.push(`amount_out ${out} below journaled stop limit ${floor}`);
+  if (out > ceil) reasons.push(`amount_out ${out} above estimate+10bps ceiling ${ceil} — pool paying absurdly high`);
+  if (reasons.length > 0) return { ok: false, status: 409, reasons };
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO fx_results (intent_id, invoice_id, amount_out_eurc6, tx_hash, fees_usdc6, discovered_by, completed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(input.intentId, input.invoiceId, input.amountOutEurc6, input.txHash, input.feesUsdc6 ?? '0', input.discoveredBy, input.completedAt),
+    env.DB.prepare(
+      `UPDATE fx_intents SET state = 'complete', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1`,
+    ).bind(input.intentId),
+    env.DB.prepare(
+      `UPDATE fx_attempts SET outcome = 'success'
+       WHERE intent_id = ?1 AND attempt_no = (SELECT MAX(attempt_no) FROM fx_attempts WHERE intent_id = ?1)`,
+    ).bind(input.intentId),
+  ]);
+  const result = await env.DB.prepare(`SELECT * FROM fx_results WHERE intent_id = ?1`).bind(input.intentId).first<FxResultRow>();
+  if (!result) throw new Error('fx result missing after insert');
+  return { ok: true, result, idempotent: false };
 }
 
 // ---- internal API (orchestrator only) ----

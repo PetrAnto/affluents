@@ -79,6 +79,38 @@ export function splitUsdc6(routed: Usdc6, p: SplitPercents): SplitResult {
   return { spendInUsdc6, reserveUsdc6, earnUsdc6 };
 }
 
+/**
+ * SDK boundary (App Kit / Circle APIs): token amounts cross as human-readable
+ * decimal strings ("0.99"). Parse by STRING decimal parsing — never floats —
+ * mirroring the 18→6 floor rule: digits beyond the 6th decimal are floored
+ * away (they only ever appear on informational values like gas estimates,
+ * never on 6-decimal token amounts; measured on Arc testnet 2026-07-24).
+ */
+export function parseSdkDecimal6(input: string): bigint {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(input.trim());
+  if (!m) throw new RangeError(`not a valid SDK decimal amount: ${JSON.stringify(input)}`);
+  const whole = BigInt(m[1]!);
+  const frac = BigInt((m[2] ?? '').slice(0, 6).padEnd(6, '0') || '0');
+  return whole * 1_000_000n + frac;
+}
+
+export function parseSdkDecimalToUsdc6(input: string): Usdc6 {
+  return asUsdc6(parseSdkDecimal6(input));
+}
+
+export function parseSdkDecimalToEurc6(input: string): Eurc6 {
+  return asEurc6(parseSdkDecimal6(input));
+}
+
+/**
+ * Exact 6-dec integer → decimal string for SDK/API inputs ("600000" →
+ * "0.600000"). Full six decimals, no separators, no floats.
+ */
+export function decimalString6(v: bigint): string {
+  if (v < 0n) throw new RangeError('negative amount');
+  return `${v / 1_000_000n}.${(v % 1_000_000n).toString().padStart(6, '0')}`;
+}
+
 /** Parse a user-typed decimal string ("100", "100.5", "100.000001") to Usdc6. */
 export function parseDecimalToUsdc6(input: string): Usdc6 {
   const s = input.trim().replace(/,/g, '');

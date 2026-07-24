@@ -68,3 +68,56 @@ describe('validateEnvConfig', () => {
     }
   });
 });
+
+describe('validateEnvConfig — FX (operator decision 2026-07-24: overrides are visible, validated lines)', () => {
+  it('demo mode (default) needs no FX vars at all', () => {
+    expect(validateEnvConfig(goodEnv()).errors).toEqual([]);
+  });
+
+  it('FX_MODE=live REQUIRES an explicit FX_ORACLE_MAX_DEVIATION_BPS and KIT_KEY', () => {
+    const env = { ...goodEnv(), FX_MODE: 'live' };
+    const r = validateEnvConfig(env);
+    expect(r.errors.some((e) => e.startsWith('FX_ORACLE_MAX_DEVIATION_BPS:') && e.includes('EXPLICITLY'))).toBe(true);
+    expect(r.errors.some((e) => e.startsWith('KIT_KEY:'))).toBe(true);
+  });
+
+  it('accepts the intended testnet live config (3000 bps override)', () => {
+    const env = {
+      ...goodEnv(),
+      FX_MODE: 'live',
+      KIT_KEY: 'k',
+      FX_ORACLE_MAX_DEVIATION_BPS: '3000',
+      FX_TOLERANCE_BPS: '50',
+      FX_TOLERANCE_LADDER: '50,75,100',
+      FX_TOLERANCE_MIN_EURC6: '10000',
+    };
+    expect(validateEnvConfig(env).errors).toEqual([]);
+  });
+
+  it('rejects a malformed mode, ladder, tolerance and oracle URL — names only', () => {
+    const env = {
+      ...goodEnv(),
+      FX_MODE: 'liv',
+    };
+    expect(validateEnvConfig(env).errors.some((e) => e.startsWith('FX_MODE:'))).toBe(true);
+
+    const env2 = {
+      ...goodEnv(),
+      FX_TOLERANCE_LADDER: '50,abc',
+      FX_TOLERANCE_BPS: '20000',
+      FX_ORACLE_URL: 'http://insecure.example',
+    };
+    const r2 = validateEnvConfig(env2);
+    expect(r2.errors.some((e) => e.startsWith('FX_TOLERANCE_LADDER:'))).toBe(true);
+    expect(r2.errors.some((e) => e.startsWith('FX_TOLERANCE_BPS:'))).toBe(true);
+    expect(r2.errors.some((e) => e === 'FX_ORACLE_URL: must be https')).toBe(true);
+    for (const e of r2.errors) expect(e).not.toContain('abc');
+  });
+
+  it('rejects a non-increasing ladder and a ladder whose first rung differs from the base', () => {
+    const r = validateEnvConfig({ ...goodEnv(), FX_TOLERANCE_LADDER: '50,50,100' });
+    expect(r.errors.some((e) => e.includes('strictly increasing'))).toBe(true);
+    const r2 = validateEnvConfig({ ...goodEnv(), FX_TOLERANCE_BPS: '25', FX_TOLERANCE_LADDER: '50,75,100' });
+    expect(r2.errors.some((e) => e.includes('first rung'))).toBe(true);
+  });
+});

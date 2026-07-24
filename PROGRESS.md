@@ -1,6 +1,7 @@
 # PROGRESS — Affluents
-Updated: 2026-07-23 12:40 UTC
-Phase: 3 — Split pipeline CORE COMPLETE on testnet (fallback FX adapter)
+Updated: 2026-07-24 10:45 UTC
+Phase: 3+ — Split pipeline COMPLETE on testnet with LIVE App Kit FX
+(USDC→EURC swap, stopLimit-protected, journaled, restart-safe)
 → next: Checkpoint 2 submission draft (due Jul 26), then Phase 4
 Live Worker URL: https://affluents.money (canonical, custom domain + www)
 GitHub: https://github.com/PetrAnto/affluents
@@ -477,3 +478,119 @@ path), verified to `payment_verified`, and routed to `completed`:
   money via DEPLOYER_PRIVATE_KEY); not committed.
 
 App Kit / live FX deliberately NOT started this session.
+
+## LIVE App Kit FX shipped end-to-end — 2026-07-24
+Replaces the fixed 0.92 demo rate with real USDC→EURC swaps via
+`@circle-fin/app-kit` + `@circle-fin/adapter-circle-wallets` (treasury SCA
+executes the swap; `allowanceStrategy: 'approve'` required for SCA). Design
+per APPKIT_FX_DECISIONS.md (all five decisions implemented as signed off; one
+amendment below). `FX_MODE=live` is set on the VPS; `FX_MODE=demo` retains the
+labeled fixed rate and journals `rate_source='demo'`.
+
+**Phase 0 measurements (all six run live on testnet, ≤0.10 USDC):**
+1. `estimateSwap` transport = **Circle API only** (`/v1/stablecoinKits/swap`)
+   — RPC queue not needed for estimates. BUT `kit.swap` makes ~3 DIRECT Arc
+   RPC calls (two ~440ms apart — over the ~1 req/s limit). Fixed by
+   `orchestrator/src/fetchPacing.ts`: global fetch to the Arc RPC host routes
+   through the existing pacing queue (AsyncLocalStorage guard prevents
+   re-enqueueing viem's own paced calls; tested incl. the deadlock case).
+2. **`estimatedOutput` is NET of the 2 bps provider fee** — a fresh estimate
+   equalled the actual on-chain amountOut to the unit (0.035187). Estimates
+   compare directly against actuals; no fee arithmetic.
+3. **stopLimit breach fails API-side BEFORE dispatch** — error
+   `INPUT_SLIPPAGE_CONSTRAINT_NOT_MET` (code 1009) in 1.4s, no tx, no gas.
+   Laddering after it is free.
+4. **EURC on Arc = plain 6-dec ERC-20 proxy** (decimals()=6). No 18/6 dual
+   view — that is USDC-only (gas token). Gas Station sponsored the swap; the
+   estimate's "gas" fee line is informational, nothing beyond amountIn left
+   the wallet.
+5. Adapter works with our dev-controlled SCA wallets first try. Swap output
+   lands back in the treasury (`toAddress`==`fromAddress`); the treasury→spend
+   EURC transfer remains the leg's second half (executions step 'fx').
+6. Oracle: frankfurter moved — use
+   `https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR` (old .app URL
+   301s). Keyless, ECB reference, daily.
+
+**⚠️ Testnet pool ≈2,000 bps from ECB fiat** (pool ~0.70 EURC/USDC vs ECB
+0.87781) — permanent testnet skew, so Decision 3's 200 bps refusal would block
+every swap. **Operator decision (2026-07-24): production default stays 200 in
+code; testnet `.env` sets `FX_ORACLE_MAX_DEVIATION_BPS=3000` explicitly**
+(3000 not 2500: measured deviation was ~2,045–2,091 bps and other teams can
+move the pool — a threshold that flaps between pass/refuse would be worse
+than either strict or loose). FX_MODE=live REQUIRES this var explicitly —
+fail-fast in configValidation.ts, so the override is a visible, validated
+line, never a silent default.
+
+**What was built:**
+- **Migration 0003** (applied `--remote`, additive only): `fx_intents`
+  (amounts, stopLimit, tolerance, rate_source, oracle rate+deviation,
+  estimated_at/block, pre-swap EURC balance, state pending|complete|halted),
+  `fx_attempts` (append-only ladder history, UNIQUE(intent, attempt_no)),
+  `fx_results` (actual out, tx, fees, discovered_by swap|reconciliation).
+- **Worker server-side guards** (`worker/src/db.ts` + `/api/internal/fx/*`):
+  intent immutable except state transitions + ladder while pending; result
+  write requires a matching PENDING intent, amount_in equal to the journaled
+  intent (divergence check), and amount_out within
+  **[stop_limit, estimate×1.001]** (Decision 5 band — both bounds); accept =
+  one atomic batch (result + complete + attempt success). Refusals write
+  NOTHING (proven by unit tests incl. exact band edges).
+- **Orchestrator FX leg** (`fx.ts`, `appKitFx.ts`): oracle sanity check
+  (unreachable ⇒ journaled-NULL warning, NEVER a halt reason) → estimate →
+  `stopLimit = estimate − max(floor(est×bps/1e4), 10000)` (0.01 EURC absolute
+  floor for micro-amounts) → journal intent → swap, one step, no gap. Ladder
+  50→75→100 bps, every attempt journaled with its floor; beyond 100 → intent
+  `halted`, invoice stays `routing`, copy "FX pending — rate unavailable";
+  reserve/earn still run, only the EURC transfer + completion defer. SDK
+  boundary crossings by string decimal parsing only
+  (`shared/amounts.ts parseSdkDecimal6`, floors >6-dec digits; round-trip
+  tested against measured SDK shapes).
+- **Restart reconciliation** (Decision 4): pending intent found on re-run ⇒
+  scan EURC Transfer logs INTO treasury (emitter-filtered via getLogs address
+  param) from the journaled `estimated_block`, value within the band ⇒
+  journal discovered result (`discovered_by='reconciliation'`); nothing found
+  ⇒ re-dispatch with the JOURNALED stopLimit — never re-estimate (a moved
+  market fails into the halt path; new price = operator action).
+- **UI actuals** (Decision 5): pay page + dashboard show journaled actuals;
+  per-invoice rate label from the invoice's own `rate_source` ('live rate' /
+  'demo rate' — demo-era invoices keep their label after go-live). Halted
+  legs surface in the dashboard Exceptions area with "FX pending — rate
+  unavailable · X USDC held unconverted · ≈ €Y at ECB reference rate —
+  indicative, conversion pending".
+
+**Proven live on testnet (evidence):**
+- **2026-014** `inv_b153c706aefc15b79c` (1.00 USDC, paid
+  0x86879623…): swap 600000 USDC → **416527 EURC actual == estimate exactly**,
+  tolerance 50 bps (absolute-floor stop 406527), oracle deviation journaled
+  2091 bps, provider fee 120 (exactly 2 bps), swap tx
+  0x136ecee41fa01933854b9bd0144fe96a2b5486cd6e6e00f02db1c72c993e020a.
+  Completed: attempts [1 success], EURC transfer + reserve + earn confirmed.
+- **2026-015** `inv_6a20c44ad17d1b6fb4` — **restart-reconciliation demo**:
+  orchestrator hard-stopped 1.9s after the intent was journaled (state
+  pending, attempt 1 'dispatched', no result; verified on-chain that no swap
+  had landed = window 1). On restart: logged "no on-chain swap found —
+  re-dispatching with journaled stopLimit 406097", attempt 2 at the SAME
+  tolerance/floor (estimated_at unchanged — never re-quoted), swap
+  0x2f9988c3…, actual 415411 EURC in band, completed.
+- **Conservation exact both invoices**: spend 600000 + reserve 250000 + earn
+  150000 = 1,000,000 in 6-dec units; ledger EURC rows equal fx_results
+  actuals to the unit. Dashboard shows 'live rate' and spend 3.59 EURC
+  (2.76 demo-era + 0.831938 live actuals).
+- Unit suites green: shared 19 (incl. SDK boundary), worker 14 (incl. band
+  edges 412244/422666-667, divergence, halted refusals), orchestrator 59
+  (stopLimit math, deviation sign, ladder walk incl. mid-ladder success,
+  oracle degradation, both restart windows, fetch pacing incl. deadlock
+  test, FX config validation). `tsc --noEmit` clean in worker+orchestrator.
+
+**Known caveats (accepted, documented):**
+- Do NOT flip FX_MODE while an invoice is mid-`routing` — a confirmed 'fx'
+  transfer journaled under the old mode would mismatch a re-derived leg
+  output (completion entries come from the leg outcome). Drain first.
+- Small race by design: if a crash happens while Circle is still executing a
+  dispatched swap and the orchestrator restarts within seconds, the
+  reconciliation scan can precede the tx landing → re-dispatch → double
+  swap. pm2 restart latency + paced reads make the window small; the journal
+  records both attempts if it ever happens. (kit.swap has no idempotency key
+  to pass — accepted in Decision 4.)
+- `swept_usdc6` gap from 2026-07-23 unchanged (out of scope per handoff).
+- Wallet pool down to 2 free after the two test invoices — refill before
+  demo day (backlog item already noted).

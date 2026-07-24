@@ -69,5 +69,72 @@ export function validateEnvConfig(env: EnvLike): ValidationResult {
     errors.push(`role config is partially set — missing: ${missing.join(', ')}`);
   }
 
+  validateFxConfig(env, errors);
+
   return { errors, roleConfigAbsent };
+}
+
+/**
+ * Live-FX configuration (App Kit). FX_MODE=demo (the default) needs nothing;
+ * FX_MODE=live requires KIT_KEY and an EXPLICIT FX_ORACLE_MAX_DEVIATION_BPS —
+ * the testnet pool sits ~2,000 bps from the ECB fiat rate (measured
+ * 2026-07-24), so the production default of 200 would refuse every swap.
+ * Making the override mandatory keeps it a visible, validated line in .env
+ * rather than a silent default (operator decision 2026-07-24).
+ */
+function validateFxConfig(env: EnvLike, errors: string[]): void {
+  const mode = env.FX_MODE ?? 'demo';
+  if (mode !== 'live' && mode !== 'demo') {
+    errors.push(`FX_MODE: must be 'live' or 'demo' (length ${env.FX_MODE?.length ?? 0})`);
+    return;
+  }
+
+  const intInRange = (name: string, min: number, max: number): number | null => {
+    const v = env[name];
+    if (v === undefined || v === '') return null;
+    if (!/^\d+$/.test(v) || Number(v) < min || Number(v) > max) {
+      errors.push(`${name}: must be an integer in [${min},${max}] (length ${v.length})`);
+      return null;
+    }
+    return Number(v);
+  };
+
+  const baseTol = intInRange('FX_TOLERANCE_BPS', 0, 10000);
+  intInRange('FX_TOLERANCE_MIN_EURC6', 0, 1_000_000_000);
+  const maxDev = intInRange('FX_ORACLE_MAX_DEVIATION_BPS', 1, 10000);
+
+  const ladderRaw = env.FX_TOLERANCE_LADDER;
+  if (ladderRaw !== undefined && ladderRaw !== '') {
+    const parts = ladderRaw.split(',').map((p) => p.trim());
+    if (parts.length === 0 || parts.some((p) => !/^\d+$/.test(p) || Number(p) > 10000)) {
+      errors.push(`FX_TOLERANCE_LADDER: must be comma-separated integers in [0,10000] (length ${ladderRaw.length})`);
+    } else {
+      const nums = parts.map(Number);
+      if (nums.some((v, i) => i > 0 && v <= nums[i - 1]!)) {
+        errors.push('FX_TOLERANCE_LADDER: values must be strictly increasing');
+      }
+      if (baseTol !== null && nums[0] !== baseTol) {
+        errors.push('FX_TOLERANCE_LADDER: first rung must equal FX_TOLERANCE_BPS');
+      }
+    }
+  }
+
+  if (env.FX_ORACLE_URL !== undefined && env.FX_ORACLE_URL !== '') {
+    try {
+      const u = new URL(env.FX_ORACLE_URL);
+      if (u.protocol !== 'https:') errors.push('FX_ORACLE_URL: must be https');
+    } catch {
+      errors.push(`FX_ORACLE_URL: not a valid URL (length ${env.FX_ORACLE_URL.length})`);
+    }
+  }
+
+  if (mode === 'live') {
+    if (!env.KIT_KEY) errors.push('KIT_KEY: required when FX_MODE=live');
+    if (maxDev === null && (env.FX_ORACLE_MAX_DEVIATION_BPS === undefined || env.FX_ORACLE_MAX_DEVIATION_BPS === '')) {
+      errors.push(
+        'FX_ORACLE_MAX_DEVIATION_BPS: must be set EXPLICITLY when FX_MODE=live ' +
+          '(testnet pool ≈2,000 bps from ECB — the 200 bps production default would refuse every swap)',
+      );
+    }
+  }
 }

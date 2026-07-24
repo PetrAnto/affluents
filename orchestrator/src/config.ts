@@ -46,4 +46,14 @@ export const config = {
   // Present once Circle setup ran; the pipeline no-ops without them.
   circleApiKey: process.env.CIRCLE_API_KEY ?? '',
   circleEntitySecret: process.env.CIRCLE_ENTITY_SECRET ?? '',
+  // ---- live FX (App Kit) — all validated by validateEnvConfig above ----
+  // demo = fixed labeled rate (an explicit operator choice, journaled per row).
+  fxMode: (process.env.FX_MODE ?? 'demo') as 'live' | 'demo',
+  fxToleranceLadderBps: (process.env.FX_TOLERANCE_LADDER ?? '50,75,100').split(',').map(Number),
+  fxToleranceMinEurc6: BigInt(process.env.FX_TOLERANCE_MIN_EURC6 ?? '10000'),
+  // Production default 200; FX_MODE=live REQUIRES an explicit value in .env
+  // (testnet override 3000 — see configValidation.ts for why).
+  fxOracleMaxDeviationBps: Number(process.env.FX_ORACLE_MAX_DEVIATION_BPS ?? 200),
+  fxOracleUrl: process.env.FX_ORACLE_URL ?? 'https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR',
+  kitKey: process.env.KIT_KEY ?? '',
 };

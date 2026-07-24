@@ -1,4 +1,5 @@
 import { asUsdc6, splitUsdc6, type SplitPercents, type Usdc6 } from '@affluents/shared';
+import { errorCodeOf, isStopLimitError, realKitFx } from './appKitFx';
 import { circleClient, type CircleClient } from './circle';
 import {
   getTransactionState,
@@ -9,13 +10,17 @@ import {
   type SentTx,
 } from './circleTx';
 import { config } from './config';
+import { fetchOracleRatePpm, runFxLeg, type FxLegConfig, type FxLegDeps } from './fx';
+import * as internalApi from './internalApi';
 import {
   completeInvoice,
   journalIntent,
   journalUpdate,
+  postFxResult,
   type LedgerEntryPayload,
   type WorkItem,
 } from './internalApi';
+import type { Rpc } from './pacedRpc';
 
 /**
  * The split pipeline (SPEC §3.2.4, §5b–§5d), journaled and idempotent:
@@ -130,7 +135,32 @@ async function runStep(
   return confirmed.txHash;
 }
 
-export async function runPipeline(item: WorkItem, rule: SplitPercents): Promise<void> {
+function fxLegConfig(roles: RoleConfig): FxLegConfig {
+  return {
+    ladderBps: config.fxToleranceLadderBps,
+    minToleranceEurc6: config.fxToleranceMinEurc6,
+    maxOracleDeviationBps: config.fxOracleMaxDeviationBps,
+    oracleUrl: config.fxOracleUrl,
+    treasuryAddress: roles.treasuryAddress,
+    eurcAddress: roles.eurcAddress,
+    retryBackoffMs: 2000,
+  };
+}
+
+function fxLegDeps(roles: RoleConfig, rpc: Rpc): FxLegDeps {
+  return {
+    kit: realKitFx(roles.treasuryAddress),
+    isStopLimitError,
+    errorCodeOf,
+    oracle: fetchOracleRatePpm,
+    api: internalApi,
+    rpc,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => new Date(),
+  };
+}
+
+export async function runPipeline(item: WorkItem, rule: SplitPercents, rpc: Rpc): Promise<void> {
   const roles = roleConfigFromEnv();
   if (!roles) {
     log(`pipeline: role wallets/vault not configured yet — leaving ${item.id} at payment_verified`);
@@ -147,14 +177,13 @@ export async function runPipeline(item: WorkItem, rule: SplitPercents): Promise<
   const routed = received > invoiced ? invoiced : received;
   const excess = asUsdc6(received - routed);
   const split = splitUsdc6(routed, rule);
-  const spendOutEurc6 = fxQuoteEurc6(split.spendInUsdc6, roles.fxRatePpm);
 
   // §5d conservation — enforced before any money moves.
   if (split.spendInUsdc6 + split.reserveUsdc6 + split.earnUsdc6 !== routed) {
     throw new Error(`conservation violation for ${item.id} — refusing to route`);
   }
 
-  log(`pipeline ${item.id}: routed=${routed} (spend ${split.spendInUsdc6} → ${spendOutEurc6} EURC, reserve ${split.reserveUsdc6}, earn ${split.earnUsdc6}) excess=${excess}`);
+  log(`pipeline ${item.id}: routed=${routed} (spend ${split.spendInUsdc6} USDC, reserve ${split.reserveUsdc6}, earn ${split.earnUsdc6}) excess=${excess} fxMode=${config.fxMode}`);
 
   // 1. sweep: full received amount, deposit wallet → treasury
   const sweepTx = await runStep(item.id, 'sweep', received, () =>
@@ -167,22 +196,57 @@ export async function runPipeline(item: WorkItem, rule: SplitPercents): Promise<
     }),
   client);
 
-  // 2. fx: treasury EURC → spend wallet at the fixed labeled rate
-  const fxTx = await runStep(
+  // 2. fx leg: USDC → EURC. Live mode swaps via App Kit (journaled in
+  //    fx_intents/fx_results, stopLimit-protected, ladder + halt path);
+  //    demo mode keeps the fixed labeled rate (journaled with
+  //    rate_source='demo'). A halted leg defers ONLY the EURC transfer and
+  //    completion — reserve/earn still run, and the invoice stays 'routing'
+  //    with status copy "FX pending — rate unavailable" until resolved.
+  const leg = await runFxLeg(
     item.id,
-    'fx',
     split.spendInUsdc6,
-    () =>
-      sendTokenTransfer(client, {
-        fromWalletId: roles.treasuryWalletId,
-        tokenAddress: roles.eurcAddress,
-        destinationAddress: roles.spendAddress,
-        amountUsdc6: asUsdc6(spendOutEurc6), // EURC shares the 6-dec format
-        refId: `${item.id}:fx`,
-      }),
-    client,
-    { amountOut6: spendOutEurc6.toString(), outputToken: 'EURC' },
+    config.fxMode,
+    fxQuoteEurc6(split.spendInUsdc6, roles.fxRatePpm),
+    fxLegConfig(roles),
+    fxLegDeps(roles, rpc),
   );
+
+  // 2b. the EURC transfer (treasury → spend wallet) of the ACTUAL output —
+  //     journaled actuals are the numbers of record (Decision 5).
+  let fxTx: string | null = null;
+  let spendOutEurc6: bigint | null = null;
+  if (leg.kind !== 'halted') {
+    spendOutEurc6 = leg.amountOutEurc6;
+    const out6 = spendOutEurc6;
+    fxTx = await runStep(
+      item.id,
+      'fx',
+      split.spendInUsdc6,
+      () =>
+        sendTokenTransfer(client, {
+          fromWalletId: roles.treasuryWalletId,
+          tokenAddress: roles.eurcAddress,
+          destinationAddress: roles.spendAddress,
+          amountUsdc6: asUsdc6(out6), // EURC shares the 6-dec format
+          refId: `${item.id}:fx`,
+        }),
+      client,
+      { amountOut6: out6.toString(), outputToken: 'EURC' },
+    );
+    if (leg.kind === 'demo') {
+      // Demo evidence is the transfer tx itself; idempotent on re-runs.
+      const post = await postFxResult({
+        intentId: `${item.id}:fx`,
+        invoiceId: item.id,
+        amountInUsdc6: split.spendInUsdc6.toString(),
+        amountOutEurc6: out6.toString(),
+        txHash: fxTx,
+        discoveredBy: 'swap',
+        completedAt: new Date().toISOString(),
+      });
+      if (!post.ok) log(`pipeline ${item.id}: demo fx_result refused (${post.reasons.join('; ')}) — continuing, ledger unaffected`);
+    }
+  }
 
   // 3. reserve: treasury USDC → reserve wallet
   const reserveTx = await runStep(item.id, 'reserve', split.reserveUsdc6, () =>
@@ -206,6 +270,15 @@ export async function runPipeline(item: WorkItem, rule: SplitPercents): Promise<
       refId: `${item.id}:earn`,
     }),
   client);
+
+  // FX halted → reserve/earn are done and journaled, but the invoice must
+  // not complete with an unconverted spend leg. Next tick re-enters here;
+  // resolution (market recovery via reconciliation, or an operator action on
+  // the halted intent) lets completion proceed.
+  if (leg.kind === 'halted' || spendOutEurc6 === null || fxTx === null) {
+    log(`pipeline ${item.id}: FX pending — rate unavailable; completion deferred (reserve/earn journaled)`);
+    return;
+  }
 
   // 5. complete: ledger deltas (+ exception_hold for the excess, which was
   //    swept to treasury but is NEVER routed), retire the wallet.

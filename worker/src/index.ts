@@ -7,8 +7,12 @@ import {
   createInvoice,
   getDashboardData,
   getExecutions,
+  getFxIntentState,
   getInvoice,
   getSplitRule,
+  haltFxIntent,
+  ladderFxIntent,
+  patchFxAttempt,
   payStateOf,
   pullWork,
   registerWallets,
@@ -16,7 +20,11 @@ import {
   setSplitRule,
   updateExecution,
   upsertExecutionIntent,
+  upsertFxIntent,
+  writeFxResult,
   type ExecutionRow,
+  type FxIntentInput,
+  type FxResultInput,
   type LedgerEntryInput,
   type TxResult,
 } from './db';
@@ -54,7 +62,7 @@ function depositUri(env: Env, depositAddress: string, amountUsdc6: bigint): stri
 }
 
 /** Routed summary for the paid state, built from confirmed executions. */
-function routingOf(env: Env, execs: ExecutionRow[]) {
+function routingOf(env: Env, execs: ExecutionRow[], fxRateSource: 'appkit' | 'demo' | null = null) {
   const by = (step: string) => execs.find((e) => e.step === step && e.status === 'confirmed');
   const fx = by('fx');
   const reserve = by('reserve');
@@ -65,7 +73,10 @@ function routingOf(env: Env, execs: ExecutionRow[]) {
     spendInFormatted: format6(asUsdc6(BigInt(fx.amount_usdc6 ?? 0))),
     spendOutFormatted: format6(asUsdc6(BigInt(fx.amount_out6 ?? 0))),
     spendOutToken: fx.output_token ?? 'EURC',
-    fxNote: env.FX_ADAPTER === 'treasury' ? 'demo rate' : null,
+    // The invoice's own journaled rate_source labels it — an invoice converted
+    // at the demo rate keeps saying so after the system goes live.
+    fxNote:
+      fxRateSource === 'appkit' ? 'live rate' : fxRateSource === 'demo' || env.FX_ADAPTER === 'treasury' ? 'demo rate' : null,
     reserveFormatted: format6(asUsdc6(BigInt(reserve.amount_usdc6 ?? 0))),
     earnFormatted: format6(asUsdc6(BigInt(earn.amount_usdc6 ?? 0))),
     spendTxUrl: txUrl(fx.tx_hash),
@@ -201,7 +212,10 @@ app.get('/api/invoices/:id', async (c) => {
   if (!inv) return c.json({ error: 'not found' }, 404);
   const json = invoiceJson(c.env, inv, new URL(c.req.url).origin);
   if (inv.status === 'routing' || inv.status === 'completed') {
-    json.routing = routingOf(c.env, await getExecutions(c.env, inv.id));
+    // Rate-source label comes from the invoice's own FX journal row; tolerate
+    // a pre-migration DB (state null → env-based fallback inside routingOf).
+    const fxState = await getFxIntentState(c.env, `${inv.id}:fx`).catch(() => null);
+    json.routing = routingOf(c.env, await getExecutions(c.env, inv.id), fxState?.intent.rate_source ?? null);
   }
   return c.json(json);
 });
@@ -369,6 +383,82 @@ internal.post('/invoices/:id/retire', async (c) => {
     walletsFreed: res[0]?.meta.changes ?? 0,
     invoicesDeleted: res[1]?.meta.changes ?? 0,
   });
+});
+
+// ---- FX journal routes (live App Kit FX; guards live in db.ts) ----
+
+const FX_ID = /^inv_[0-9a-f]+:fx$/;
+const INT = /^\d+$/;
+
+/** Journal an FX intent before the swap (idempotent); returns intent+attempts+result. */
+internal.post('/fx/intents', async (c) => {
+  const b = await c.req.json<FxIntentInput>();
+  if (!FX_ID.test(b.id ?? '') || !b.invoiceId || !b.estimatedAt) {
+    return c.json({ error: 'id (<invoiceId>:fx), invoiceId, estimatedAt required' }, 400);
+  }
+  for (const [k, v] of Object.entries({ amountInUsdc6: b.amountInUsdc6, estimatedOutEurc6: b.estimatedOutEurc6, stopLimitEurc6: b.stopLimitEurc6 })) {
+    if (!INT.test(String(v))) return c.json({ error: `integer ${k} required` }, 400);
+  }
+  if (!Number.isInteger(b.toleranceBps) || b.toleranceBps < 0 || b.toleranceBps > 10000) {
+    return c.json({ error: 'toleranceBps must be an integer in [0,10000]' }, 400);
+  }
+  if (b.rateSource !== 'appkit' && b.rateSource !== 'demo') return c.json({ error: 'rateSource must be appkit|demo' }, 400);
+  return c.json(await upsertFxIntent(c.env, b));
+});
+
+internal.get('/fx/intents/:id', async (c) => {
+  const state = await getFxIntentState(c.env, c.req.param('id'));
+  if (!state) return c.json({ error: 'not found' }, 404);
+  return c.json(state);
+});
+
+/** Ladder retry: wider tolerance on the same pending intent (Decision 2). */
+internal.post('/fx/intents/:id/ladder', async (c) => {
+  const b = await c.req.json<{ attemptNo: number; toleranceBps: number; estimatedOutEurc6: string; stopLimitEurc6: string; estimatedAt: string; estimatedBlock?: string | null; preSwapEurc6?: string | null }>();
+  if (!Number.isInteger(b.attemptNo) || b.attemptNo < 2) return c.json({ error: 'attemptNo >= 2 required' }, 400);
+  if (!Number.isInteger(b.toleranceBps) || b.toleranceBps < 0 || b.toleranceBps > 10000) {
+    return c.json({ error: 'toleranceBps must be an integer in [0,10000]' }, 400);
+  }
+  if (!INT.test(String(b.estimatedOutEurc6)) || !INT.test(String(b.stopLimitEurc6)) || !b.estimatedAt) {
+    return c.json({ error: 'integer estimatedOutEurc6/stopLimitEurc6 and estimatedAt required' }, 400);
+  }
+  const res = await ladderFxIntent(c.env, c.req.param('id'), b);
+  if (res === null) return c.json({ error: 'not found' }, 404);
+  if (res === 'not_pending') return c.json({ error: 'intent is not pending — ladder refused' }, 409);
+  return c.json(res);
+});
+
+internal.post('/fx/intents/:id/attempt', async (c) => {
+  const b = await c.req.json<{ attemptNo: number; outcome: 'stop_limit_not_met' | 'error'; errorCode?: string }>();
+  if (!Number.isInteger(b.attemptNo) || (b.outcome !== 'stop_limit_not_met' && b.outcome !== 'error')) {
+    return c.json({ error: 'attemptNo and outcome (stop_limit_not_met|error) required' }, 400);
+  }
+  const ok = await patchFxAttempt(c.env, c.req.param('id'), b.attemptNo, b.outcome, b.errorCode);
+  if (!ok) return c.json({ error: 'attempt not found' }, 404);
+  return c.json({ ok: true });
+});
+
+internal.post('/fx/intents/:id/halt', async (c) => {
+  const ok = await haltFxIntent(c.env, c.req.param('id'));
+  if (!ok) return c.json({ error: 'intent not found or not pending' }, 409);
+  return c.json({ ok: true });
+});
+
+/** Journal the swap's actuals. Server-side: pending intent, divergence, band. */
+internal.post('/fx/results', async (c) => {
+  const b = await c.req.json<FxResultInput>();
+  if (!b.intentId || !b.invoiceId || !b.txHash || !b.completedAt) {
+    return c.json({ error: 'intentId, invoiceId, txHash, completedAt required' }, 400);
+  }
+  if (!INT.test(String(b.amountInUsdc6)) || !INT.test(String(b.amountOutEurc6)) || (b.feesUsdc6 !== undefined && !INT.test(String(b.feesUsdc6)))) {
+    return c.json({ error: 'integer amountInUsdc6/amountOutEurc6/feesUsdc6 required' }, 400);
+  }
+  if (b.discoveredBy !== 'swap' && b.discoveredBy !== 'reconciliation') {
+    return c.json({ error: 'discoveredBy must be swap|reconciliation' }, 400);
+  }
+  const res = await writeFxResult(c.env, b);
+  if (!res.ok) return c.json({ error: 'fx result refused', reasons: res.reasons }, res.status);
+  return c.json({ ok: true, idempotent: res.idempotent, result: res.result });
 });
 
 /**

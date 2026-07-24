@@ -80,7 +80,7 @@ function u6(n: number): Usdc6 {
   return asUsdc6(BigInt(n));
 }
 
-function statusCell(inv: InvoiceRow): { dot: string; text: string } {
+function statusCell(inv: InvoiceRow, fxPending = false): { dot: string; text: string } {
   if (inv.status === 'completed') {
     return inv.overpaid || inv.unexpected_payment
       ? { dot: 'var(--reserve)', text: 'Routed · extra held' }
@@ -92,6 +92,8 @@ function statusCell(inv: InvoiceRow): { dot: string; text: string } {
       ? { dot: 'var(--reserve)', text: 'Paid · extra held' }
       : { dot: 'var(--river)', text: 'Paid' };
   }
+  // Neutral halt copy (Decision 3) — never a silent downgrade, never an error.
+  if (inv.status === 'routing' && fxPending) return { dot: 'var(--reserve)', text: 'FX pending — rate unavailable' };
   if (inv.status === 'routing') return { dot: 'var(--river)', text: 'Routing' };
   if (inv.status === 'failed_retryable') return { dot: 'var(--reserve)', text: 'Failed — retrying' };
   if (inv.status === 'failed_terminal') return { dot: 'var(--reserve)', text: 'Failed' };
@@ -175,12 +177,20 @@ function stepChart(invoices: InvoiceRow[], now: Date): string {
 }
 
 export function dashboardPage(data: DashData, secret: string, explorer: string, now: Date, fxAdapter = 'treasury'): string {
-  const { totals, invoices, rule, exceptions } = data;
-  const fxNote = fxAdapter === 'treasury' ? ' · demo rate' : '';
+  const { totals, invoices, rule, exceptions, fxHalted, fxLatestSource } = data;
+  // Journaled rate_source of the latest completed conversion wins; the env
+  // adapter name is only the pre-journal fallback.
+  const fxNote =
+    fxLatestSource === 'appkit'
+      ? ' · live rate'
+      : fxLatestSource === 'demo' || fxAdapter === 'treasury'
+        ? ' · demo rate'
+        : '';
+  const fxPendingIds = new Set((fxHalted ?? []).map((h) => h.invoice_id));
 
   const invoiceRows = invoices
     .map((inv) => {
-      const st = statusCell(inv);
+      const st = statusCell(inv, fxPendingIds.has(inv.id));
       const addrUrl = inv.deposit_address ? `${explorer}/address/${inv.deposit_address}` : null;
       return `<tr>
         <td class="id"><a href="/pay/${esc(inv.id)}">${esc(inv.display_no)}</a></td>
@@ -202,6 +212,25 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
         <i class="dot"></i>
         <div class="body">
           <span class="t tnum">Extra ${format6(u6(e.delta6))} USDC received — held, not routed</span>
+          <span class="m">${meta}</span>
+        </div>
+      </div>`;
+    })
+    .join('\n');
+
+  // Halted FX legs: honest copy only — funds sit in USDC; the euro figure is
+  // explicitly indicative (ECB reference), never a ledger claim (Decision 3).
+  const fxRows = (fxHalted ?? [])
+    .map((h) => {
+      const indicative =
+        h.oracle_rate_ppm !== null && h.oracle_rate_ppm > 0
+          ? ` · ≈ €${format6(asUsdc6((BigInt(h.amount_in_usdc6) * BigInt(h.oracle_rate_ppm)) / 1_000_000n))} at ECB reference rate — indicative, conversion pending`
+          : '';
+      const meta = [h.display_no ? `Invoice ${h.display_no}` : null, h.label].filter(Boolean).join(' · ');
+      return `<div class="exc">
+        <i class="dot"></i>
+        <div class="body">
+          <span class="t tnum">FX pending — rate unavailable · ${format6(u6(h.amount_in_usdc6))} USDC held unconverted${indicative}</span>
           <span class="m">${meta}</span>
         </div>
       </div>`;
@@ -276,10 +305,10 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
     </section>
 
     ${
-      excRows
+      excRows || fxRows
         ? `<section>
       <div class="slabel">Exceptions</div>
-      ${excRows}
+      ${excRows}${fxRows ? `\n      ${fxRows}` : ''}
     </section>`
         : ''
     }

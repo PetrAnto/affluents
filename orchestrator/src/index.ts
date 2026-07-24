@@ -1,6 +1,7 @@
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { config } from './config';
 import { runPipeline } from './executor';
+import { installArcRpcFetchPacing } from './fetchPacing';
 import { ping, pullWork } from './internalApi';
 import { createPacedRpc, createRpcQueue } from './pacedRpc';
 import { processInvoice } from './watcher';
@@ -18,6 +19,10 @@ const rawClient = createPublicClient({
 // 1100ms apart so a full tick's reads stay under the limit instead of bursting.
 const rpcQueue = createRpcQueue(config.rpcMinGapMs);
 const client = createPacedRpc(rawClient, rpcQueue);
+// App Kit's kit.swap issues direct Arc RPC calls from inside the SDK
+// (measured 2026-07-24: bursts above the ~1 req/s limit). Route any fetch to
+// the RPC host through the same queue; our own paced calls pass through.
+installArcRpcFetchPacing(rpcQueue, config.arcRpcUrl);
 
 async function startupChecks(): Promise<void> {
   // Chain connectivity: right chain, live blocks, ERC-20 view answering.
@@ -62,7 +67,7 @@ async function tick(): Promise<void> {
   for (const item of work.watching) {
     if (item.status !== 'payment_verified' && item.status !== 'routing') continue;
     try {
-      await runPipeline(item, work.rule);
+      await runPipeline(item, work.rule, client);
     } catch (e) {
       log(`pipeline ${item.id} failed (will retry next tick): ${(e as Error).message}`);
     }

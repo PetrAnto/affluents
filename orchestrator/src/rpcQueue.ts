@@ -14,9 +14,19 @@
  * POLL_INTERVAL_MS.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 export interface RpcQueue {
   enqueue<T>(fn: () => Promise<T>): Promise<T>;
 }
+
+/**
+ * Set while a queued task runs. The global-fetch interceptor
+ * (fetchPacing.ts) checks it so a request made INSIDE a queued task — e.g.
+ * viem's transport fetch under a paced readContract — passes straight through
+ * instead of re-enqueueing behind itself (which would deadlock the chain).
+ */
+export const rpcQueueContext = new AsyncLocalStorage<true>();
 
 export function isRateLimitError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
@@ -41,7 +51,7 @@ export function createRpcQueue(
     const wait = minGapMs - (now() - lastStart);
     if (wait > 0) await sleep(wait);
     lastStart = now();
-    return fn();
+    return rpcQueueContext.run(true, fn);
   }
 
   function enqueue<T>(fn: () => Promise<T>): Promise<T> {
