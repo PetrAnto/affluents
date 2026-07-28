@@ -69,6 +69,8 @@ td.stat .s{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-
 td.date{font-size:12.5px;color:var(--muted);white-space:nowrap}
 td.last{text-align:right;padding-right:0;white-space:nowrap}
 td.last a{font-size:12.5px;text-decoration:none}
+.rlink{border:none;background:none;color:var(--river);font-family:var(--font-body);font-size:12.5px;font-weight:400;cursor:pointer;padding:0;margin-left:12px}
+.rlink:hover{color:var(--ink)}
 .spring{flex:1 1 0}
 .mark{padding:44px 0 26px;display:flex;flex-direction:column;align-items:center;gap:7px}
 .mark svg{color:var(--contour)}
@@ -198,7 +200,9 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
         <td class="num">${format6(u6(inv.amount_usdc6))} <span>USDC</span></td>
         <td class="stat"><span class="s"><i class="sdot" style="background:${st.dot}"></i>${esc(st.text)}</span></td>
         <td class="date">${fmtDate(inv.created_at)}</td>
-        <td class="last">${addrUrl ? `<a href="${addrUrl}" target="_blank" rel="noopener">ArcScan ↗</a>` : ''}</td>
+        <td class="last">${addrUrl ? `<a href="${addrUrl}" target="_blank" rel="noopener">ArcScan ↗</a>` : ''}${
+          inv.portal_token ? `<button class="rlink" data-path="/r/${esc(inv.portal_token)}" title="Copy the client receipt link">Receipt ⧉</button>` : ''
+        }</td>
       </tr>`;
     })
     .join('\n');
@@ -375,6 +379,18 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
     }).catch(function () {
       btn.disabled = false;
       btn.textContent = 'Save failed — retry';
+    });
+  });
+})();
+(function () {
+  /* Copy-receipt-link affordance (PORTAL_HANDOFF Phase B item 5) — the only
+     dashboard change of the portal cycle. Read-only: copies /r/:token. */
+  document.querySelectorAll('.rlink').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      try { navigator.clipboard.writeText(window.location.origin + btn.dataset.path); } catch (e) {}
+      var prev = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      setTimeout(function () { btn.textContent = prev; }, 1800);
     });
   });
 })();

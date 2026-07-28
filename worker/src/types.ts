@@ -40,6 +40,8 @@ export interface InvoiceRow {
   overpaid_usdc6: number;
   overpaid: number;
   unexpected_payment: number;
+  /** Read-only receipt capability (migration 0004); NULL on pre-0004 invoices. */
+  portal_token?: string | null;
   created_at: string;
   // joined from deposit_wallets when selected with the wallet
   deposit_address?: string | null;

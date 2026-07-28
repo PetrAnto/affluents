@@ -99,6 +99,8 @@ export interface PayPageData {
   usdcAddress: string;
   chainIdHex: string;
   explorer: string;
+  /** Read-only receipt link, shown once paid (NULL on pre-0004 invoices). */
+  portalToken: string | null;
 }
 
 export function payPage(d: PayPageData): string {
@@ -180,6 +182,7 @@ export function payPage(d: PayPageData): string {
       </div>
       <p class="note">Settled on Arc · fee ~$0.01 paid in the same USDC</p>
       <p class="note" id="payLinks"></p>
+      ${d.portalToken ? `<p class="note"><a href="/r/${esc(d.portalToken)}">View receipt →</a></p>` : ''}
     </section>
 
     ${

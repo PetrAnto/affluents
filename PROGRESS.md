@@ -1,8 +1,8 @@
 # PROGRESS — Affluents
-Updated: 2026-07-24 10:45 UTC
-Phase: 3+ — Split pipeline COMPLETE on testnet with LIVE App Kit FX
-(USDC→EURC swap, stopLimit-protected, journaled, restart-safe)
-→ next: Checkpoint 2 submission draft (due Jul 26), then Phase 4
+Updated: 2026-07-28 10:00 UTC
+Phase: 4 — Read-only client portal LIVE (tokenized receipts at /r/:token)
+on top of the complete split pipeline with LIVE App Kit FX
+→ next: work-queue item 3 (see operator queue); wallet pool refill before demo
 Live Worker URL: https://affluents.money (canonical, custom domain + www)
 GitHub: https://github.com/PetrAnto/affluents
 
@@ -594,3 +594,85 @@ line, never a silent default.
 - `swept_usdc6` gap from 2026-07-23 unchanged (out of scope per handoff).
 - Wallet pool down to 2 free after the two test invoices — refill before
   demo day (backlog item already noted).
+
+## Read-only client portal shipped — 2026-07-28
+Work-queue item 2, built to PORTAL_HANDOFF.md (operator-signed decisions
+2026-07-28; the handoff file itself deleted in this cycle's final commit as
+instructed). After paying, a client opens a private tokenized receipt link
+and sees what happened to their payment — honestly labeled, with nothing
+about the freelancer's allocation policy exposed.
+
+**What was built:**
+- **Migration 0004** (operator-applied `--local` then `--remote`, additive
+  only): `invoices.portal_token` TEXT + unique index. 128-bit capability,
+  `rcp_` + 32 hex, generated inside the existing atomic creation batch
+  (`createInvoice`). No backfill: pre-0004 invoices stay NULL and are
+  unreachable via the portal (a non-null bind can never match NULL).
+  The invoice id is never accepted as a portal credential.
+- **`GET /api/portal/:token`** — dedicated least-privilege endpoint;
+  internal→client mapping (`worker/src/portal.ts clientStateOf`, a sibling
+  of `payStateOf`) happens inside the Worker. Exhaustive DTO allowlist:
+  label, amount_usdc6, received_usdc6, overpaid_usdc6 (only if flagged),
+  unexpected_payment, client_state, funding_txs (hash+ArcScan URL),
+  rate_label (from the invoice's OWN journaled rate_source; label only,
+  never the EURC amount), fx_pending, fx_pending_usdc6 + fx_indicative_eur
+  (only while pending; € omitted when the journaled oracle rate is NULL),
+  paid_at, completed. A key-set snapshot test pins the exact key set per
+  scenario, so an accidental field addition fails loudly.
+- **`GET /r/:token`** — server-rendered receipt page (house style):
+  timeline Payment received → Verified on-chain → Allocated → Complete;
+  "Allocated · live rate/demo rate" label on completion; FX-pending
+  indicative line from the journaled oracle rate (no external fetch);
+  overpaid / unexpected-payment notes per the signed copy table
+  (failed_terminal reads "allocation in progress" — failures are the
+  operator's to resolve, never the client's); ~5s polling that stops once
+  final. Malformed, unknown, and NULL tokens (and even a pre-migration DB
+  error) all collapse into ONE generic 404 — verified byte-identical.
+- **Link surfacing:** pay page shows "View receipt → /r/:token" in the paid
+  state only; dashboard invoice rows get a copy-receipt-link button (the
+  only dashboard change this cycle).
+- **Zero write paths:** the ONLY routes added are `GET /r/:token` and
+  `GET /api/portal/:token`, both pure reads.
+
+**Proven live on testnet (evidence, invoice 2026-016
+`inv_2d24bb3f0795c704fd`, 1.00 USDC, paid 0xbb24a48d6872…24ffdc0c):**
+- Full DTO state trail captured by a 5s poller, every transition:
+  awaiting (received 0) → verified 09:39:08 (funding tx + paid_at) →
+  allocating → allocating with fx_pending=true, fx_pending_usdc6=600000,
+  fx_indicative_eur="0.52" (the pre-swap window, journaled oracle rate,
+  live-rate label) → fx complete → complete=true 09:39:49 ("live rate").
+  42s payment→complete. Every response contained only allowlisted keys.
+- Generic 404 shown for malformed AND well-formed-unknown tokens, API and
+  page, bodies byte-identical (`cmp`).
+- FX-pending indicative state caught LIVE in the raw JSON trail (the
+  09:39:34 entry above) — no mocked substitute needed. The window is ~5s on
+  a healthy swap, so no screenshot of it exists; the DTO capture plus the
+  fx-pending unit tests (incl. the NULL-oracle omit-€ branch) are the
+  record.
+- Route inventory (worker/src/index.ts): the portal cycle added exactly
+  TWO routes — `GET /r/:token`, `GET /api/portal/:token` — and no POST/
+  PUT/DELETE anywhere. Zero write paths reachable from the portal.
+- Screenshots: receipt awaiting (/tmp/portal-evidence/, verified in
+  session); completed receipt + paid pay page with "View receipt →"
+  verified by the operator in-browser; dashboard copy-link verified by the
+  operator (screenshot command provided, operator-run since the dashboard
+  URL embeds the secret).
+- Suites green: 114 tests (22 new portal tests incl. the DTO key-set
+  snapshot and the full internal→client state table), `tsc --noEmit` clean.
+  Deployed version 5674b644, verified on affluents.money.
+
+**Known caveats:**
+- **Privacy pass before any real user:** pay page reveals the full split
+  (Spend/Reserve/Earn amounts + rate note) to the payer, and public
+  `GET /api/invoices/:id` returns routing amounts + internal status to any
+  id holder — deliberate demo-era choice (payer == client; ids are 72-bit
+  random), decided by the operator 2026-07-28.
+- Worker var `FX_ADAPTER="treasury"` is NOT dead config: it is the
+  pre-journal fallback label (index.ts routingOf + dashboard) that keeps
+  pre-0003 demo-era invoices honestly labeled "demo rate". It does not
+  select the running FX adapter (that is the orchestrator's FX_MODE).
+  Keep as-is; rename in a future cleanup cycle at most.
+- Portal token appears in the pay page HTML source (it feeds the "View
+  receipt" link) — anyone with the pay link can reach the receipt, which
+  shows strictly less than the pay page itself. Accepted.
+- Wallet pool now 1 free after invoice 2026-016 — refill before demo day.

@@ -8,6 +8,17 @@ function randomId(prefix: string): string {
 }
 
 /**
+ * 128-bit portal capability (PORTAL_HANDOFF decision 1): 'rcp_' + 32 hex.
+ * The invoice id is never accepted as a portal credential — identifiers are
+ * not capabilities.
+ */
+function newPortalToken(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `rcp_${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
  * Atomically create an invoice and claim one free wallet (SPEC §3.1).
  * The whole batch is one D1 transaction; the wallet-claim UPDATE is a single
  * statement whose WHERE re-checks status='free', so two concurrent creations
@@ -23,9 +34,9 @@ export async function createInvoice(
   await env.DB.batch([
     env.DB.prepare(`UPDATE counters SET value = value + 1 WHERE name = 'invoice_display'`),
     env.DB.prepare(
-      `INSERT INTO invoices (id, display_no, amount_usdc6, label, memo, status)
-       VALUES (?1, printf('2026-%03d', (SELECT value FROM counters WHERE name = 'invoice_display')), ?2, ?3, ?4, 'created')`,
-    ).bind(id, amountUsdc6.toString(), label, memo),
+      `INSERT INTO invoices (id, display_no, amount_usdc6, label, memo, status, portal_token)
+       VALUES (?1, printf('2026-%03d', (SELECT value FROM counters WHERE name = 'invoice_display')), ?2, ?3, ?4, 'created', ?5)`,
+    ).bind(id, amountUsdc6.toString(), label, memo, newPortalToken()),
     env.DB.prepare(
       `UPDATE deposit_wallets SET status = 'assigned', invoice_id = ?1
        WHERE id = (SELECT id FROM deposit_wallets WHERE status = 'free' ORDER BY created_at, id LIMIT 1)
@@ -54,6 +65,15 @@ export async function getInvoice(env: Env, id: string): Promise<InvoiceRow | nul
   )
     .bind(id)
     .first<InvoiceRow>();
+}
+
+/**
+ * Portal lookup (read-only). Deliberately does NOT join the wallet: the
+ * receipt DTO never carries a deposit address. `?1` is always a non-null
+ * string, so NULL portal_token rows (pre-0004 invoices) can never match.
+ */
+export async function getInvoiceByPortalToken(env: Env, token: string): Promise<InvoiceRow | null> {
+  return await env.DB.prepare(`SELECT * FROM invoices WHERE portal_token = ?1`).bind(token).first<InvoiceRow>();
 }
 
 /** Client reported a wallet-button payment (txHash). Idempotent. */

@@ -9,6 +9,7 @@ import {
   getExecutions,
   getFxIntentState,
   getInvoice,
+  getInvoiceByPortalToken,
   getSplitRule,
   haltFxIntent,
   ladderFxIntent,
@@ -34,6 +35,8 @@ import { dashboardPage } from './pages/dashboard';
 import { deckPage } from './pages/deck';
 import { landingPage } from './pages/landing';
 import { payPage } from './pages/pay';
+import { receipt404Page, receiptPage } from './pages/receipt';
+import { buildPortalDto } from './portal';
 import type { Env, InvoiceRow } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -156,10 +159,40 @@ app.get('/pay/:id', async (c) => {
       usdcAddress: c.env.USDC_ADDRESS,
       chainIdHex: '0x' + Number(c.env.ARC_CHAIN_ID).toString(16),
       explorer: c.env.ARC_EXPLORER,
+      portalToken: inv.portal_token ?? null,
     }),
     200,
     HTML_HEADERS,
   );
+});
+
+// ---- read-only client portal (PORTAL_HANDOFF) ----
+// Both routes are GET-only reads — this cycle introduces NO write path
+// reachable from the portal. All failure modes (malformed, unknown, or
+// pre-0004 NULL token, even a pre-migration DB error) collapse into ONE
+// generic 404, indistinguishable by design.
+
+const PORTAL_TOKEN_RE = /^rcp_[0-9a-f]{32}$/;
+
+/** Least-privilege receipt lookup: invoice + its fx intent, nothing else. */
+async function portalLookup(env: Env, token: string) {
+  if (!PORTAL_TOKEN_RE.test(token)) return null;
+  const inv = await getInvoiceByPortalToken(env, token).catch(() => null);
+  if (!inv) return null;
+  const fx = await getFxIntentState(env, `${inv.id}:fx`).catch(() => null);
+  return buildPortalDto(inv, fx, env.ARC_EXPLORER);
+}
+
+app.get('/r/:token', async (c) => {
+  const dto = await portalLookup(c.env, c.req.param('token'));
+  if (!dto) return c.body(receipt404Page(), 404, HTML_HEADERS);
+  return c.body(receiptPage(dto, c.req.param('token')), 200, HTML_HEADERS);
+});
+
+app.get('/api/portal/:token', async (c) => {
+  const dto = await portalLookup(c.env, c.req.param('token'));
+  if (!dto) return c.json({ error: 'not found' }, 404);
+  return c.json(dto);
 });
 
 app.get('/dashboard/:secret', async (c) => {
