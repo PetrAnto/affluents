@@ -115,10 +115,12 @@ async function runHop(
     const current = await deps.getWithdrawal(id);
     const attempt = current?.steps.find((s) => s.step === step)?.attempt_count ?? row.attempt_count;
     const key = deps.deterministicKey(`${id}:${step}:${attempt}`);
+    deps.log(`withdrawal ${id}: dispatching '${step}' hop (attempt ${attempt})`);
     const sent = await send(key);
     providerRef = sent.providerRef;
     const updated = await deps.postStepUpdate(id, { step, status: 'sent', providerRef, bumpAttempt: true });
     if (!updated.ok) refuse(id, `step '${step}' sent journal`, updated);
+    deps.log(`withdrawal ${id}: '${step}' dispatched (ref ${providerRef})`);
   }
 
   const confirmed = await deps.waitForConfirmation(providerRef);
