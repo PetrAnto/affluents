@@ -294,6 +294,21 @@ script OUTSIDE the repo (Circle contract execution
 **Review gate:** report the four findings. If sponsorship fails or the event
 shape surprises, STOP.
 
+**EXECUTED 2026-07-29, operator-witnessed (A3), nothing surprising:**
+- Withdraw 10000 Usdc6: Circle ref a83ef285-aa35-5148-b721-6310ca3ac4f7, tx
+  0x58b343012ca5c4877642b331a3a5b483c974962315a168ac0d8ad86cf7a91791
+  (block 54267566). Gas payer 0xCec1…9389 (bundler) — Gas Station sponsors
+  `withdraw` ✓. `Withdraw(owner=treasury, 10000)` emitted by the vault ✓.
+  USDC Transfer vault→treasury exactly 10000 (USDC emitter; EIP-7708 system
+  logs present at 18-dec and correctly ignorable by emitter filter) ✓.
+  Treasury USDC rose to exactly 3,460,000 — zero gas out of treasury ✓.
+- Redeposit 10000: Circle ref 5427ae2c-0bdc-57ac-98af-ca3feb8d3bf0, tx
+  0xeaa7caeb2afd16440fcd2f75ff12c58f287ac33c92b483dcddcd43db33a88b5a
+  (block 54268341), Deposit(owner=treasury, 10000), sponsored likewise.
+- Before/after reads byte-identical: sharesOf(treasury) = totalShares =
+  vault USDC = 1,200,000; treasury USDC 3,450,000. Net ops movement: ZERO —
+  ledger untouched (off-journal measurement, as specified).
+
 ## Phase 1 — Journal schema + Worker guards
 
 Additive-only migration `0005_withdrawals.sql` (exact SQL reviewed at this
