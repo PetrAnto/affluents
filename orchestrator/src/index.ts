@@ -5,6 +5,7 @@ import { installArcRpcFetchPacing } from './fetchPacing';
 import { ping, pullWork } from './internalApi';
 import { createPacedRpc, createRpcQueue } from './pacedRpc';
 import { processInvoice } from './watcher';
+import { processWithdrawal } from './withdraw';
 
 function log(msg: string): void {
   console.log(`${new Date().toISOString()} ${msg}`);
@@ -48,7 +49,8 @@ let lastSummary = '';
 
 async function tick(): Promise<void> {
   const work = await pullWork();
-  const summary = `reported=${work.reported.length} watching=${work.watching.length} freeWallets=${work.freeWallets}`;
+  const withdrawals = work.withdrawals ?? []; // absent until the 0005-aware Worker is live
+  const summary = `reported=${work.reported.length} watching=${work.watching.length} freeWallets=${work.freeWallets} withdrawals=${withdrawals.length}`;
   if (summary !== lastSummary) {
     log(`work: ${summary}`);
     lastSummary = summary;
@@ -70,6 +72,16 @@ async function tick(): Promise<void> {
       await runPipeline(item, work.rule, client);
     } catch (e) {
       log(`pipeline ${item.id} failed (will retry next tick): ${(e as Error).message}`);
+    }
+  }
+  // Withdraw-from-Earn: pending withdrawals, journaled + reconciled per hop
+  // (WITHDRAW_HANDOFF.md). Same retry posture as the pipeline: an error is
+  // logged and retried next tick; state stays visible in the journal.
+  for (const w of withdrawals) {
+    try {
+      await processWithdrawal(w, client);
+    } catch (e) {
+      log(`withdrawal ${w.id} failed (will retry next tick): ${(e as Error).message}`);
     }
   }
 }

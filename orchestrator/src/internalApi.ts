@@ -41,11 +41,33 @@ export interface WorkItem {
   paid_txs: string;
 }
 
+export interface WithdrawalStepRow {
+  id: string;
+  withdrawal_id: string;
+  step: 'vault' | 'transfer';
+  status: 'intent' | 'sent' | 'confirmed' | 'failed';
+  provider_ref: string | null;
+  tx_hash: string | null;
+  amount_usdc6: number;
+  attempt_count: number;
+}
+
+export interface WithdrawalFeedItem {
+  id: string;
+  amount_usdc6: number;
+  destination: 'spend' | 'reserve';
+  state: 'pending' | 'complete' | 'failed';
+  created_block: number | null;
+  steps: WithdrawalStepRow[];
+}
+
 export interface Work {
   reported: WorkItem[];
   watching: WorkItem[];
   freeWallets: number;
   rule: { spendPct: number; reservePct: number; earnPct: number };
+  /** Absent until the 0005-aware Worker is deployed — treat as []. */
+  withdrawals?: WithdrawalFeedItem[];
 }
 
 export function pullWork(): Promise<Work> {
@@ -223,4 +245,76 @@ export async function postFxResult(payload: FxResultPayload): Promise<FxResultRe
     return { ok: false, status: res.status, reasons: body.reasons ?? [] };
   }
   throw new Error(`internal API POST /fx/results → ${res.status} ${await res.text()}`);
+}
+
+// ---- withdraw-from-Earn (WITHDRAW_HANDOFF.md; mirrors the fx client) ----
+
+export interface WithdrawalStateResponse {
+  withdrawal: {
+    id: string;
+    amount_usdc6: number;
+    destination: 'spend' | 'reserve';
+    state: 'pending' | 'complete' | 'failed';
+    created_block: number | null;
+  };
+  steps: WithdrawalStepRow[];
+}
+
+export async function getWithdrawal(id: string): Promise<WithdrawalStateResponse | null> {
+  const res = await callRaw('GET', `/withdrawals/${id}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`internal API GET /withdrawals/${id} → ${res.status} ${await res.text()}`);
+  return (await res.json()) as WithdrawalStateResponse;
+}
+
+export type WithdrawalStepResponse =
+  | { ok: true; step: WithdrawalStepRow }
+  | { ok: false; status: number; reasons: string[] };
+
+async function stepCall(path: string, payload: unknown): Promise<WithdrawalStepResponse> {
+  const res = await callRaw('POST', path, payload);
+  if (res.ok) return { ok: true, step: (await res.json()) as WithdrawalStepRow };
+  if (res.status === 409 || res.status === 404) {
+    const body = (await res.json().catch(() => ({ reasons: ['unparseable refusal'] }))) as { reasons?: string[] };
+    return { ok: false, status: res.status, reasons: body.reasons ?? [] };
+  }
+  throw new Error(`internal API POST ${path} → ${res.status} ${await res.text()}`);
+}
+
+export function postWithdrawalStep(
+  id: string,
+  payload: { step: 'vault' | 'transfer'; amountUsdc6: string; createdBlock?: string },
+): Promise<WithdrawalStepResponse> {
+  return stepCall(`/withdrawals/${id}/steps`, payload);
+}
+
+export function postWithdrawalStepUpdate(
+  id: string,
+  payload: {
+    step: 'vault' | 'transfer';
+    status?: 'sent' | 'confirmed' | 'failed';
+    providerRef?: string;
+    txHash?: string;
+    bumpAttempt?: boolean;
+  },
+): Promise<WithdrawalStepResponse> {
+  return stepCall(`/withdrawals/${id}/steps/update`, payload);
+}
+
+export type WithdrawalCompleteResponse =
+  | { ok: true; idempotent: boolean }
+  | { ok: false; status: number; reasons: string[] };
+
+/** Refusals (guards) come back as values — operator-visible, never a crash. */
+export async function postWithdrawalComplete(id: string, amountUsdc6: string): Promise<WithdrawalCompleteResponse> {
+  const res = await callRaw('POST', `/withdrawals/${id}/complete`, { amountUsdc6 });
+  if (res.ok) {
+    const body = (await res.json()) as { idempotent: boolean };
+    return { ok: true, idempotent: body.idempotent };
+  }
+  if (res.status === 409 || res.status === 404) {
+    const body = (await res.json().catch(() => ({ reasons: ['unparseable refusal'] }))) as { reasons?: string[] };
+    return { ok: false, status: res.status, reasons: body.reasons ?? [] };
+  }
+  throw new Error(`internal API POST /withdrawals/${id}/complete → ${res.status} ${await res.text()}`);
 }

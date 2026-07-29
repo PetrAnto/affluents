@@ -1,5 +1,17 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { CircleClient } from './circle';
+
+/**
+ * Deterministic Circle idempotencyKey (UUID shape) derived from a stable
+ * seed — used by the withdraw legs so a re-dispatch after a crash in the
+ * send-then-journal window returns the SAME Circle transaction instead of
+ * moving money twice. Different attempts use different seeds.
+ */
+export function deterministicIdempotencyKey(seed: string): string {
+  const h = createHash('sha256').update(`affluents:idem:${seed}`).digest('hex');
+  // Format as a valid v4-shaped UUID: version and variant nibbles fixed.
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 /**
  * Circle transaction plumbing for the split pipeline. All sends originate
@@ -31,6 +43,7 @@ export async function sendTokenTransfer(
     destinationAddress: string;
     amountUsdc6: bigint;
     refId: string;
+    idempotencyKey?: string;
   },
 ): Promise<SentTx> {
   const res = await client.createTransaction({
@@ -43,7 +56,7 @@ export async function sendTokenTransfer(
     amount: [usdc6ToDecimalString(args.amountUsdc6)],
     refId: args.refId,
     fee: { type: 'level', config: { feeLevel: 'MEDIUM' } },
-    idempotencyKey: randomUUID(),
+    idempotencyKey: args.idempotencyKey ?? randomUUID(),
   });
   const id = res.data?.id;
   if (!id) throw new Error('Circle createTransaction returned no id');
@@ -58,6 +71,7 @@ export async function sendContractExecution(
     abiFunctionSignature: string;
     abiParameters: Array<string | number | boolean>;
     refId: string;
+    idempotencyKey?: string;
   },
 ): Promise<SentTx> {
   const res = await client.createContractExecutionTransaction({
@@ -67,7 +81,7 @@ export async function sendContractExecution(
     abiParameters: args.abiParameters,
     refId: args.refId,
     fee: { type: 'level', config: { feeLevel: 'MEDIUM' } },
-    idempotencyKey: randomUUID(),
+    idempotencyKey: args.idempotencyKey ?? randomUUID(),
   });
   const id = res.data?.id;
   if (!id) throw new Error('Circle createContractExecutionTransaction returned no id');
