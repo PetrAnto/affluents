@@ -159,3 +159,230 @@ stop-and-ask, not a judgment call. Expected shape (subject to your diagnosis):
 - [ ] This file deleted in the final commit.
 - [ ] Pushed; Worker deployed; operator has verified the dashboard in their
       own browser.
+
+
+---
+
+# SESSION RECORD — appended 2026-07-29 (gates run live against this file's process)
+
+The operator ran this cycle before the file above reached the repo (uploaded
+via the GitHub web editor mid-cycle, per its own house rules). The gates
+below were executed in-session; where a decision was AMENDED at a gate, the
+amendment supersedes the corresponding signed decision above (decision 2 →
+both destinations USDC, no FX leg anywhere this cycle, EURC-on-withdraw
+roadmap only; decision 4 → NEW additive withdrawals/withdrawal_steps tables,
+since executions is invoice-locked). Everything else above stands, including
+the copy table (adapted "To Spend (USDC)"), the pre-dispatch confirmation
+step, exception_hold for out-of-band actuals, the done-means checklist, and
+deletion of this file in the final commit.
+
+## Gate 0 — SIGNED operator decisions (2026-07-29, after evidence review)
+
+1. **Destination selector, both USDC (AMENDED).** Two options: "To Spend
+   (USDC)" — ledger-labeled "Withdrawn from Earn" — and "To Reserve (USDC)".
+   Same vault leg, different transfer destination + ledger bucket. NO FX leg
+   anywhere in this cycle; withdrawn USDC is never converted (EURC-on-withdraw
+   is roadmap only). Conservation exact (band = 0) on BOTH destinations.
+2. **Journal (AMENDED).** NEW additive `withdrawals` journal (migration 0005)
+   — `executions` is invoice-locked. Intent-first, house status shape,
+   `destination` a CHECK-constrained enum ('spend','reserve'). Exact SQL
+   shown at the Phase 1 review gate before applying.
+3. **Partial withdrawals (CONFIRMED).** Server-side: integer Usdc6,
+   `> 0`, `>= 10000` (0.01 USDC floor), `<= sharesOf(treasury)` — enforced
+   in the Worker against the ledger-derived Earn balance (proven equal to
+   on-chain sharesOf in the evidence below), and on-chain by the vault's own
+   `require(assets <= shares)` as final authority.
+4. **Two-hop traceability (NEW REQUIREMENT).** The money path is two hops
+   (vault → treasury → destination wallet). Each hop is journaled and
+   reconcilable independently; a crash between hops must leave a traceable
+   intermediate state, shown as "Withdrawal in progress" — never invisible,
+   never failed. Consequence: once the vault hop is confirmed, `failed` is
+   FORBIDDEN — the only path is forward to completion.
+5. **D1 Earn total operator-verified: 1,200,000** — matches on-chain exactly.
+
+Standing from the draft (unamended, so unchanged per the operator): dashboard
+URL-secret auth for the trigger; at most ONE withdrawal in a non-terminal
+state (409 on a second); portal/receipt untouched — the DTO key-set snapshot
+stays byte-identical; this file is deleted in the final commit.
+
+**Route/SQL gate amendments (operator, 2026-07-29):**
+- **A1 — parent fail also blocked on 'sent':** `POST /withdrawals/:id/fail`
+  refuses (409) when ANY step is 'sent' OR 'confirmed'. A sent hop must
+  first be reconciled to 'confirmed' or step-'failed' (with proven on-chain
+  absence) before the withdrawal may be failed. Dedicated test for this
+  exact window.
+- **A2 — exactly-one-of invoice_id/withdrawal_id on ledger rows** is
+  CODE-enforced (SQLite cannot ALTER in a CHECK): the enforcement point is
+  the `/withdrawals/:id/complete` batch builder in the Worker, plus a test.
+- **A3 — Phase 0 micro-withdrawal conditions:** minimum amount (10000
+  Usdc6); the operator witnesses it live (announce BEFORE dispatch); the
+  0.01 USDC is re-deposited via the existing deposit path immediately
+  after, restoring vault + position to exactly 1,200,000; before/after
+  reads shown.
+- **Accepted knowingly:** a permanently-stuck withdrawal blocks new
+  withdrawals (safety property; demo discipline noted).
+
+## Gate 0 evidence — gathered 2026-07-29 (read-only, no secrets touched)
+
+1. **FX↔invoice coupling is schema AND code.** `fx_intents.invoice_id` is
+   `NOT NULL REFERENCES invoices(id)` (migrations/0003_fx_journal.sql:8);
+   same on `fx_results` (0003:45); intent ids are literally
+   `'<invoice_id>:fx'` (0003:7, orchestrator/src/fx.ts:172). Code:
+   `runFxLeg(invoiceId, …)` (fx.ts:165), invoked with the invoice's split
+   amount (executor.ts:205-211); the post-swap EURC transfer is journaled in
+   invoice-keyed `executions` (0001:57-58 step CHECK); Worker writes bind
+   invoice_id (db.ts:395, 527-529); dashboard halted-FX view INNER JOINs
+   invoices (db.ts:186-189 — a non-invoice row would silently vanish);
+   portal rate label reads the invoice's own intent (portal.ts:78-106).
+2. **DemoVault:** only `withdraw(uint256 assetsUsdc6)` exists
+   (contracts/src/DemoVault.sol:36-44) — no redeem(shares); shares are 1:1
+   assets by construction, so exact-asset withdrawal is native. No allowance
+   needed (vault pushes via `transfer`). Authorization is msg.sender-scoped.
+   Live reads (paced RPC, 33 calls, 0 rate-limit errors):
+   `sharesOf(treasury) = balanceOfAssets(treasury) = totalShares() =
+   USDC.balanceOf(vault) = 1_200_000`. Owner = treasury SCA
+   0x87AE649883Af5f8f6689D294BD7445B227b299CD (recovered from swap receipt
+   0x136ecee4…e020a + latest Deposit event owner; matches PROGRESS
+   0x87ae…99cd). shares == totalShares ⇒ sole owner.
+3. **Two-destination selector (Spend USDC / Reserve USDC) is free:** ledger
+   CHECK already allows bucket 'reserve' with token 'USDC' (0001:73); the
+   reserve wallet address/id are already validated role config used by the
+   reserve step (executor.ts:252-259). Same vault leg; only the transfer
+   `destinationAddress` and the ledger bucket differ. Zero FX involvement;
+   zero extra migration — `destination` is a column in the NEW 0005 table,
+   which does not exist anywhere yet.
+4. **Before state:** on-chain position 1,200,000 Usdc6 (1.20 USDC), fully
+   backed 1:1. Latest deposit: 150,000 at block 54,069,038, tx
+   0x5f98aa779b89c843283b6962791907966011285c7ea1637ee5eb42a780731a73
+   (invoice 2026-016's earn step). D1 `SUM(ledger earn USDC)` expected
+   1,200,000 (Phase-3 450,000 + 5 × 150,000 per PROGRESS); operator
+   confirmation command in session notes (wrangler token is operator-only).
+
+## Diagnosis before writing (mandatory)
+
+Confirm or correct, in code, before Phase 1:
+
+- `DemoVault.withdraw(assetsUsdc6)` pays `msg.sender`; the depositor is the
+  **treasury SCA** (deposits were Circle contract executions from the treasury
+  wallet), so `sharesOf[treasury]` == the journaled Earn total. Verify the
+  live number: on-chain `sharesOf(treasury)` vs `SELECT SUM(delta6) FROM
+  ledger WHERE bucket='earn' AND token='USDC'`.
+- Withdraw needs **no allowance** (vault pushes via `transfer`), unlike
+  deposit's `transferFrom`.
+- The `executions` step CHECK does NOT include a withdraw step — and SQLite
+  cannot ALTER a CHECK. The journal therefore goes in a NEW additive table,
+  never a table rebuild.
+- All reads of Arc RPC go through the pacing queue (~1.1s gap); Circle API
+  calls do not.
+
+State findings, then proceed.
+
+## Phase 0 — Live micro-measurement (report before Phase 1)
+
+One tiny real withdrawal (0.01 USDC) executed manually via a throwaway
+script OUTSIDE the repo (Circle contract execution
+`withdraw(uint256)` from the treasury wallet, Gas Station sponsored):
+
+1. Does Gas Station sponsor the vault `withdraw` call as it did `deposit`?
+2. Confirm the `Withdraw(owner, assetsUsdc6)` event lands with
+   emitter == VAULT_ADDRESS and owner == treasury (this is the
+   reconciliation signal).
+3. Confirm treasury USDC `balanceOf` rises by exactly the amount (6-dec).
+4. Journal nothing; then IMMEDIATELY record the 0.01 as an operator ops
+   movement in the session notes so conservation reporting stays honest.
+
+**Review gate:** report the four findings. If sponsorship fails or the event
+shape surprises, STOP.
+
+## Phase 1 — Journal schema + Worker guards
+
+Additive-only migration `0005_withdrawals.sql` (exact SQL reviewed at this
+gate; summary):
+
+- `withdrawals`: `id` (`wd_` + 16 hex), `amount_usdc6` (CHECK ≥ 10000),
+  `destination` CHECK ('spend','reserve'), `state`
+  (`pending|complete|failed`), `fail_reason`, `created_block`, timestamps.
+- `withdrawal_steps` (mirrors `executions`' status shape, per-hop): id
+  `'<wd>:vault' | '<wd>:transfer'`, `step` CHECK ('vault','transfer'),
+  `status` (`intent|sent|confirmed|failed`), `provider_ref`, `tx_hash`,
+  `amount_usdc6`, `attempt_count`, UNIQUE(withdrawal_id, step).
+- `ALTER TABLE ledger ADD COLUMN withdrawal_id` (nullable) — explicit
+  provenance for withdrawal-written ledger rows.
+- Worker (state of record) server-side guards:
+  - Create (`POST /dashboard/:secret/withdraw`): refuse unless integer
+    amount, `≥ 10000`, `≤ SUM(ledger earn USDC)` minus non-terminal
+    withdrawals; 409 if a non-terminal withdrawal exists — enforced by ONE
+    conditional INSERT…SELECT…WHERE NOT EXISTS (atomic, wallet-claim
+    style), proven by a concurrency test.
+  - Internal API (`/api/internal/withdrawals/*`, X-Internal-Key): step
+    upsert + forward-only status updates (divergence guard: step amount
+    must equal the journaled withdrawal amount); `failed` REFUSED once any
+    step is confirmed (Gate 0 decision 4); completion requires both steps
+    confirmed with tx hashes and is ONE atomic batch: ledger `earn −X` +
+    `<destination> +X` (both USDC, withdrawal_id set, per-hop tx hashes) +
+    state `complete`. Refusals write nothing.
+- Unit tests: over-balance refusal at the exact boundary, 10000 floor
+  boundary, second-pending 409, completion atomicity, forbidden-fail after
+  vault confirm, no negative Earn possible.
+
+**Review gate:** show the exact migration SQL before applying. Check:
+additive only, no destructive statements, `--remote` explicit and deliberate.
+
+## Phase 2 — Orchestrator step + restart reconciliation
+
+- New pipeline handler (`orchestrator/src/withdraw.ts`), idempotent per
+  withdrawal id, intent-row-first like every other step:
+  1. Hop A (`vault` step): Circle contract execution `withdraw(uint256)`
+     from treasury on VAULT_ADDRESS, `refId <id>:vault`; step intent →
+     sent (provider_ref) → confirmed (tx hash), `runStep` semantics.
+  2. Hop B (`transfer` step): `sendTokenTransfer` treasury → the wallet
+     for the journaled `destination` (spend or reserve), exact
+     `amount_usdc6`, `refId <id>:transfer`; same step lifecycle; then POST
+     complete (the Worker writes the atomic ledger batch).
+- Divergence guard exactly like `runStep`: recomputed amount ≠ journaled
+  amount → THROW, never send.
+- Restart reconciliation, in order: a stored provider_ref is queried on
+  Circle FIRST (state of the exact transaction we sent); only if the ref is
+  missing/unknown, scan `Withdraw` events (emitter == vault, owner ==
+  treasury) since `created_block` before re-dispatching. Never trust
+  balances alone — the treasury also receives sweeps.
+- Kill-test both windows: between intent and vault dispatch, and between
+  vault confirm and transfer dispatch.
+
+## Phase 3 — UI + live proof
+
+- Dashboard Earn card: current position, "Withdraw" button (BRAND voice:
+  plain verbs), amount form with Max + destination selector ("To Spend
+  (USDC)" / "To Reserve (USDC)"), in-progress state ("Withdrawal in
+  progress" — visible for ANY non-terminal withdrawal, incl. between hops),
+  refusal messages surfaced verbatim. Spend card shows USDC ("Withdrawn
+  from Earn") alongside EURC when nonzero. No portal/receipt changes —
+  clients never see buckets; the portal DTO key-set snapshot stays
+  byte-identical.
+- Live proof on testnet: one real partial withdrawal end-to-end with
+  explorer links for both txs, the withdrawal row, ledger rows summing
+  exactly, and `sharesOf(treasury)` reduced by exactly the amount. Plus one
+  restart-reconciliation demonstration.
+
+## Out of scope — do not start
+
+FX on withdrawals (roadmap only, per Gate 0 decision 1), withdrawing to
+external addresses, scheduled/auto withdrawals, `swept_usdc6` migration,
+wallet-pool refill (separate operator task), any deck regeneration.
+
+## House rules (unchanged)
+
+- Never print `.env` values; variable names only.
+- `npx tsc --noEmit` + `npx vitest run` before every Worker deploy;
+  `wrangler deploy` does not typecheck.
+- Migrations additive only; one-off repairs via targeted
+  `wrangler d1 execute --remote` with self-guarding predicates.
+- Cloudflare edge serves stale ~30s post-deploy; not a failed deploy.
+
+## Done means
+
+A real partial withdrawal executed from the dashboard on testnet, shown via:
+both explorer links, the `withdrawals` row, ledger conservation exact to the
+unit (Earn down + Spend up by the same integer), a restart-reconciliation
+demonstration, tests green, a PROGRESS.md entry, and a push. Delete this file
+in the final commit, per the portal-cycle precedent.

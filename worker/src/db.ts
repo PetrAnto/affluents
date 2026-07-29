@@ -540,6 +540,291 @@ export async function writeFxResult(env: Env, input: FxResultInput): Promise<FxR
   return { ok: true, result, idempotent: false };
 }
 
+// ---- withdraw-from-Earn journal (migration 0005; WITHDRAW_HANDOFF.md) ----
+//
+// Two-hop money path: vault → treasury (step 'vault'), treasury → destination
+// wallet (step 'transfer'). Each hop is journaled and reconcilable
+// independently (Gate 0 decision 4). Ledger provenance rule (gate amendment
+// A2): SQLite cannot add a table CHECK by ALTER, so "exactly one of
+// invoice_id / withdrawal_id per ledger row" is enforced in code, at the two
+// ledger writers — completeWithdrawal below binds invoice_id NULL and sets
+// withdrawal_id; completeInvoice never names withdrawal_id.
+
+export interface WithdrawalRow {
+  id: string;
+  amount_usdc6: number;
+  destination: 'spend' | 'reserve';
+  state: 'pending' | 'complete' | 'failed';
+  fail_reason: string | null;
+  created_block: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WithdrawalStepRow {
+  id: string;
+  withdrawal_id: string;
+  step: 'vault' | 'transfer';
+  status: 'intent' | 'sent' | 'confirmed' | 'failed';
+  provider_ref: string | null;
+  tx_hash: string | null;
+  amount_usdc6: number;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WithdrawalState {
+  withdrawal: WithdrawalRow;
+  steps: WithdrawalStepRow[];
+}
+
+export type WithdrawalCreateOutcome =
+  | { ok: true; withdrawal: WithdrawalRow }
+  | { ok: false; status: 400 | 409; reasons: string[] };
+
+/**
+ * Create a withdrawal (operator action, dashboard-secret gated at the route).
+ * Both business guards — at most ONE non-terminal withdrawal, and amount
+ * within the ledger-derived Earn balance — live in the WHERE of a single
+ * conditional INSERT (wallet-claim style), so two concurrent creations can
+ * never both pass. Refusals write nothing.
+ */
+export async function createWithdrawal(
+  env: Env,
+  input: { amountUsdc6: string; destination: string },
+): Promise<WithdrawalCreateOutcome> {
+  const reasons: string[] = [];
+  if (input.destination !== 'spend' && input.destination !== 'reserve') {
+    reasons.push(`destination must be 'spend' or 'reserve'`);
+  }
+  if (!/^\d+$/.test(String(input.amountUsdc6))) {
+    reasons.push('amountUsdc6 must be an integer string');
+  } else if (BigInt(input.amountUsdc6) < 10_000n) {
+    reasons.push('amount below the 0.01 USDC minimum (10000 Usdc6)');
+  }
+  if (reasons.length > 0) return { ok: false, status: 400, reasons };
+
+  const id = `wd_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+  const res = await env.DB.prepare(
+    `INSERT INTO withdrawals (id, amount_usdc6, destination)
+     SELECT ?1, ?2, ?3
+     WHERE NOT EXISTS (SELECT 1 FROM withdrawals WHERE state = 'pending')
+       AND ?2 <= COALESCE((SELECT SUM(delta6) FROM ledger WHERE bucket = 'earn' AND token = 'USDC'), 0)`,
+  )
+    .bind(id, input.amountUsdc6, input.destination)
+    .run();
+  if (res.meta.changes === 0) {
+    // Diagnose for the refusal message only — the guard already held.
+    const [pending, sum] = await Promise.all([
+      env.DB.prepare(`SELECT id FROM withdrawals WHERE state = 'pending' LIMIT 1`).first<{ id: string }>(),
+      env.DB.prepare(`SELECT COALESCE(SUM(delta6), 0) AS s FROM ledger WHERE bucket = 'earn' AND token = 'USDC'`).first<{ s: number }>(),
+    ]);
+    if (pending) reasons.push(`withdrawal ${pending.id} is already in progress — one at a time`);
+    else reasons.push(`amount ${input.amountUsdc6} exceeds the Earn balance ${sum?.s ?? 0}`);
+    return { ok: false, status: 409, reasons };
+  }
+  const row = await env.DB.prepare(`SELECT * FROM withdrawals WHERE id = ?1`).bind(id).first<WithdrawalRow>();
+  if (!row) throw new Error('withdrawal missing after insert');
+  return { ok: true, withdrawal: row };
+}
+
+export async function getWithdrawalState(env: Env, id: string): Promise<WithdrawalState | null> {
+  const withdrawal = await env.DB.prepare(`SELECT * FROM withdrawals WHERE id = ?1`).bind(id).first<WithdrawalRow>();
+  if (!withdrawal) return null;
+  const steps = await env.DB.prepare(`SELECT * FROM withdrawal_steps WHERE withdrawal_id = ?1 ORDER BY step`).bind(id).all<WithdrawalStepRow>();
+  return { withdrawal, steps: steps.results };
+}
+
+/** Recent withdrawals with their step states (dashboard in-progress display). */
+export async function listWithdrawals(env: Env, limit = 20): Promise<WithdrawalState[]> {
+  const rows = await env.DB.prepare(`SELECT * FROM withdrawals ORDER BY created_at DESC LIMIT ?1`).bind(limit).all<WithdrawalRow>();
+  const out: WithdrawalState[] = [];
+  for (const withdrawal of rows.results) {
+    const steps = await env.DB.prepare(`SELECT * FROM withdrawal_steps WHERE withdrawal_id = ?1 ORDER BY step`)
+      .bind(withdrawal.id)
+      .all<WithdrawalStepRow>();
+    out.push({ withdrawal, steps: steps.results });
+  }
+  return out;
+}
+
+export type WithdrawalStepOutcome =
+  | { ok: true; step: WithdrawalStepRow }
+  | { ok: false; status: 404 | 409; reasons: string[] };
+
+/**
+ * Journal a hop intent BEFORE any send. Idempotent per step id; the
+ * divergence guard refuses any amount that differs from the journaled
+ * withdrawal, so a mismatched send can never be journaled. `createdBlock`
+ * records the reconciliation scan start once (never overwritten).
+ */
+export async function upsertWithdrawalStepIntent(
+  env: Env,
+  withdrawalId: string,
+  step: 'vault' | 'transfer',
+  amountUsdc6: string,
+  createdBlock?: string | null,
+): Promise<WithdrawalStepOutcome> {
+  const state = await getWithdrawalState(env, withdrawalId);
+  if (!state) return { ok: false, status: 404, reasons: ['withdrawal not found'] };
+  const reasons: string[] = [];
+  if (state.withdrawal.state !== 'pending') reasons.push(`withdrawal state is '${state.withdrawal.state}', not 'pending'`);
+  if (String(state.withdrawal.amount_usdc6) !== amountUsdc6) {
+    reasons.push(`amount ${amountUsdc6} differs from journaled withdrawal ${state.withdrawal.amount_usdc6}`);
+  }
+  if (reasons.length > 0) return { ok: false, status: 409, reasons };
+  const id = `${withdrawalId}:${step}`;
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO withdrawal_steps (id, withdrawal_id, step, amount_usdc6) VALUES (?1, ?2, ?3, ?4)`).bind(
+      id,
+      withdrawalId,
+      step,
+      amountUsdc6,
+    ),
+    env.DB.prepare(`UPDATE withdrawals SET created_block = COALESCE(created_block, ?2) WHERE id = ?1`).bind(
+      withdrawalId,
+      createdBlock ?? null,
+    ),
+  ]);
+  const row = await env.DB.prepare(`SELECT * FROM withdrawal_steps WHERE id = ?1`).bind(id).first<WithdrawalStepRow>();
+  if (!row) throw new Error('withdrawal step missing after insert');
+  return { ok: true, step: row };
+}
+
+/**
+ * Hop status update. 'confirmed' is terminal for a step — the only refused
+ * transition is leaving it. 'failed' here is STEP-level (retryable: a later
+ * 'sent'/'confirmed' may supersede it); withdrawal-level failure is
+ * failWithdrawal, with its own guard.
+ */
+export async function updateWithdrawalStep(
+  env: Env,
+  withdrawalId: string,
+  step: 'vault' | 'transfer',
+  patch: { status?: 'sent' | 'confirmed' | 'failed'; providerRef?: string; txHash?: string; bumpAttempt?: boolean },
+): Promise<WithdrawalStepOutcome> {
+  const id = `${withdrawalId}:${step}`;
+  const row = await env.DB.prepare(`SELECT * FROM withdrawal_steps WHERE id = ?1`).bind(id).first<WithdrawalStepRow>();
+  if (!row) return { ok: false, status: 404, reasons: ['withdrawal step not found'] };
+  if (patch.status && patch.status !== row.status && row.status === 'confirmed') {
+    return { ok: false, status: 409, reasons: [`step is 'confirmed' — terminal, no transition to '${patch.status}'`] };
+  }
+  if (patch.status === 'confirmed' && !patch.txHash && !row.tx_hash) {
+    return { ok: false, status: 409, reasons: [`'confirmed' requires a tx_hash`] };
+  }
+  await env.DB.prepare(
+    `UPDATE withdrawal_steps SET
+       status = COALESCE(?2, status),
+       provider_ref = COALESCE(?3, provider_ref),
+       tx_hash = COALESCE(?4, tx_hash),
+       attempt_count = attempt_count + ?5,
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = ?1`,
+  )
+    .bind(id, patch.status ?? null, patch.providerRef ?? null, patch.txHash ?? null, patch.bumpAttempt ? 1 : 0)
+    .run();
+  const updated = await env.DB.prepare(`SELECT * FROM withdrawal_steps WHERE id = ?1`).bind(id).first<WithdrawalStepRow>();
+  if (!updated) throw new Error('withdrawal step missing after update');
+  return { ok: true, step: updated };
+}
+
+export type WithdrawalFailOutcome =
+  | { ok: true; withdrawal: WithdrawalRow }
+  | { ok: false; status: 404 | 409; reasons: string[] };
+
+/**
+ * Withdrawal-level failure. Gate amendment A1: a hop that has been DISPATCHED
+ * ('sent' or 'confirmed') blocks this — it must first be reconciled to
+ * 'confirmed' or step-'failed' (with proven on-chain absence). The guard
+ * lives in the WHERE of one UPDATE, so the check and the write are atomic.
+ */
+export async function failWithdrawal(env: Env, id: string, reason: string): Promise<WithdrawalFailOutcome> {
+  const res = await env.DB.prepare(
+    `UPDATE withdrawals SET state = 'failed', fail_reason = ?2,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?1 AND state = 'pending'
+        AND NOT EXISTS (SELECT 1 FROM withdrawal_steps
+                        WHERE withdrawal_id = ?1 AND status IN ('sent', 'confirmed'))`,
+  )
+    .bind(id, reason)
+    .run();
+  if (res.meta.changes === 0) {
+    const state = await getWithdrawalState(env, id);
+    if (!state) return { ok: false, status: 404, reasons: ['withdrawal not found'] };
+    const reasons: string[] = [];
+    if (state.withdrawal.state !== 'pending') reasons.push(`state is '${state.withdrawal.state}', not 'pending'`);
+    for (const s of state.steps.filter((s) => s.status === 'sent' || s.status === 'confirmed')) {
+      reasons.push(`step '${s.step}' is '${s.status}' — reconcile it before failing the withdrawal`);
+    }
+    if (reasons.length === 0) reasons.push('refused by guard');
+    return { ok: false, status: 409, reasons };
+  }
+  const row = await env.DB.prepare(`SELECT * FROM withdrawals WHERE id = ?1`).bind(id).first<WithdrawalRow>();
+  if (!row) throw new Error('withdrawal missing after fail');
+  return { ok: true, withdrawal: row };
+}
+
+export type WithdrawalCompleteOutcome =
+  | { ok: true; withdrawal: WithdrawalRow; idempotent: boolean }
+  | { ok: false; status: 404 | 409; reasons: string[] };
+
+/**
+ * Atomic completion: ledger earn −X + <destination> +X (both USDC, per-hop tx
+ * hashes, withdrawal_id set, invoice_id NULL — amendment A2) + state flip, in
+ * ONE batch. Requires both hops 'confirmed' with tx hashes and the exact
+ * journaled amount (band = 0 on both destinations). Each ledger INSERT
+ * re-checks state='pending' inside the statement, so a raced double-complete
+ * cannot write ledger rows twice. Refusals write nothing.
+ */
+export async function completeWithdrawal(env: Env, id: string, amountUsdc6: string): Promise<WithdrawalCompleteOutcome> {
+  const state = await getWithdrawalState(env, id);
+  if (!state) return { ok: false, status: 404, reasons: ['withdrawal not found'] };
+  const { withdrawal, steps } = state;
+  if (withdrawal.state === 'complete') return { ok: true, withdrawal, idempotent: true };
+
+  const reasons: string[] = [];
+  if (withdrawal.state !== 'pending') reasons.push(`state is '${withdrawal.state}', not 'pending'`);
+  if (String(withdrawal.amount_usdc6) !== amountUsdc6) {
+    reasons.push(`amount ${amountUsdc6} differs from journaled withdrawal ${withdrawal.amount_usdc6}`);
+  }
+  const vault = steps.find((s) => s.step === 'vault');
+  const transfer = steps.find((s) => s.step === 'transfer');
+  for (const [name, s] of [
+    ['vault', vault],
+    ['transfer', transfer],
+  ] as const) {
+    if (!s) {
+      reasons.push(`step '${name}' has no journal row`);
+      continue;
+    }
+    if (s.status !== 'confirmed') reasons.push(`step '${name}' is '${s.status}', not 'confirmed'`);
+    if (!s.tx_hash) reasons.push(`step '${name}' has no tx_hash`);
+    if (String(s.amount_usdc6) !== amountUsdc6) reasons.push(`step '${name}' amount ${s.amount_usdc6} differs from ${amountUsdc6}`);
+  }
+  if (reasons.length > 0) return { ok: false, status: 409, reasons };
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO ledger (bucket, token, delta6, tx_hash, invoice_id, withdrawal_id)
+       SELECT 'earn', 'USDC', ?1, ?2, NULL, ?3
+       WHERE EXISTS (SELECT 1 FROM withdrawals WHERE id = ?3 AND state = 'pending')`,
+    ).bind((-BigInt(amountUsdc6)).toString(), vault!.tx_hash, id),
+    env.DB.prepare(
+      `INSERT INTO ledger (bucket, token, delta6, tx_hash, invoice_id, withdrawal_id)
+       SELECT ?1, 'USDC', ?2, ?3, NULL, ?4
+       WHERE EXISTS (SELECT 1 FROM withdrawals WHERE id = ?4 AND state = 'pending')`,
+    ).bind(withdrawal.destination, amountUsdc6, transfer!.tx_hash, id),
+    env.DB.prepare(
+      `UPDATE withdrawals SET state = 'complete', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = ?1 AND state = 'pending'`,
+    ).bind(id),
+  ]);
+  const row = await env.DB.prepare(`SELECT * FROM withdrawals WHERE id = ?1`).bind(id).first<WithdrawalRow>();
+  if (!row) throw new Error('withdrawal missing after complete');
+  return { ok: true, withdrawal: row, idempotent: false };
+}
+
 // ---- internal API (orchestrator only) ----
 
 export interface RegisterWalletInput {
@@ -567,7 +852,7 @@ export async function registerWallets(env: Env, wallets: RegisterWalletInput[]):
 
 /** Work the orchestrator polls for: reported payments to verify, wallets to watch. */
 export async function pullWork(env: Env) {
-  const [reported, watching, freeCount, rule] = await Promise.all([
+  const [reported, watching, freeCount, rule, pendingWithdrawals] = await Promise.all([
     env.DB.prepare(
       `SELECT i.id, i.amount_usdc6, i.received_usdc6, i.paid_txs, i.status, w.address AS deposit_address,
               w.baseline_usdc6, w.id AS wallet_id, w.circle_wallet_id
@@ -584,12 +869,27 @@ export async function pullWork(env: Env) {
     ).all(),
     env.DB.prepare(`SELECT COUNT(*) AS n FROM deposit_wallets WHERE status = 'free'`).first<{ n: number }>(),
     getSplitRule(env),
+    // Non-terminal withdrawals drive both normal processing and restart
+    // reconciliation (WITHDRAW_HANDOFF.md); steps attached below.
+    env.DB.prepare(`SELECT * FROM withdrawals WHERE state = 'pending'`).all<WithdrawalRow>(),
   ]);
+  const withdrawalSteps =
+    pendingWithdrawals.results.length > 0
+      ? (
+          await env.DB.prepare(
+            `SELECT * FROM withdrawal_steps WHERE withdrawal_id IN (SELECT id FROM withdrawals WHERE state = 'pending')`,
+          ).all<WithdrawalStepRow>()
+        ).results
+      : [];
   return {
     reported: reported.results,
     watching: watching.results,
     freeWallets: freeCount?.n ?? 0,
     rule: { spendPct: rule.spend_pct, reservePct: rule.reserve_pct, earnPct: rule.earn_pct },
+    withdrawals: pendingWithdrawals.results.map((w) => ({
+      ...w,
+      steps: withdrawalSteps.filter((s) => s.withdrawal_id === w.id),
+    })),
   };
 }
 

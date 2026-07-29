@@ -4,15 +4,20 @@ import { renderSVG } from 'uqr';
 import {
   applyVerification,
   completeInvoice,
+  completeWithdrawal,
   createInvoice,
+  createWithdrawal,
+  failWithdrawal,
   getDashboardData,
   getExecutions,
   getFxIntentState,
   getInvoice,
   getInvoiceByPortalToken,
   getSplitRule,
+  getWithdrawalState,
   haltFxIntent,
   ladderFxIntent,
+  listWithdrawals,
   patchFxAttempt,
   payStateOf,
   pullWork,
@@ -20,8 +25,10 @@ import {
   reportPayment,
   setSplitRule,
   updateExecution,
+  updateWithdrawalStep,
   upsertExecutionIntent,
   upsertFxIntent,
+  upsertWithdrawalStepIntent,
   writeFxResult,
   type ExecutionRow,
   type FxIntentInput,
@@ -211,6 +218,31 @@ app.post('/dashboard/:secret/rule', async (c) => {
   }
   await setSplitRule(c.env, body.spendPct, body.reservePct, body.earnPct);
   return c.json({ ok: true });
+});
+
+/**
+ * Withdraw from Earn (WITHDRAW_HANDOFF.md, Gate 0 signed 2026-07-29).
+ * Dashboard-secret gated, same demo-era auth model as the rule editor —
+ * money can only move between the operator's own buckets. All business
+ * guards (10000 floor, Earn balance bound, one-at-a-time) are server-side
+ * in createWithdrawal; refusals write nothing.
+ */
+app.post('/dashboard/:secret/withdraw', async (c) => {
+  if (!timingSafeEqual(c.req.param('secret'), c.env.DASHBOARD_SECRET)) return c.body('Not found', 404);
+  const body = await c.req.json<{ amountUsdc6: string; destination: string }>().catch(() => null);
+  if (!body) return c.json({ error: 'JSON body required' }, 400);
+  const out = await createWithdrawal(c.env, {
+    amountUsdc6: String(body.amountUsdc6 ?? ''),
+    destination: String(body.destination ?? ''),
+  });
+  if (!out.ok) return c.json({ error: out.reasons.join('; ') }, out.status);
+  return c.json({ ok: true, withdrawal: out.withdrawal });
+});
+
+/** Read-only: withdrawals + step states, feeds the in-progress display. */
+app.get('/dashboard/:secret/withdrawals', async (c) => {
+  if (!timingSafeEqual(c.req.param('secret'), c.env.DASHBOARD_SECRET)) return c.body('Not found', 404);
+  return c.json({ withdrawals: await listWithdrawals(c.env) });
 });
 
 // ---- public JSON API ----
@@ -492,6 +524,59 @@ internal.post('/fx/results', async (c) => {
   const res = await writeFxResult(c.env, b);
   if (!res.ok) return c.json({ error: 'fx result refused', reasons: res.reasons }, res.status);
   return c.json({ ok: true, idempotent: res.idempotent, result: res.result });
+});
+
+// ---- withdraw-from-Earn (WITHDRAW_HANDOFF.md; mirrors executions/fx) ----
+
+internal.get('/withdrawals/:id', async (c) => {
+  const state = await getWithdrawalState(c.env, c.req.param('id'));
+  return state ? c.json(state) : c.json({ error: 'withdrawal not found' }, 404);
+});
+
+internal.post('/withdrawals/:id/steps', async (c) => {
+  const b = await c.req.json<{ step: string; amountUsdc6: string; createdBlock?: string }>();
+  if ((b.step !== 'vault' && b.step !== 'transfer') || !INT.test(String(b.amountUsdc6))) {
+    return c.json({ error: `step ('vault'|'transfer') and integer amountUsdc6 required` }, 400);
+  }
+  if (b.createdBlock !== undefined && !INT.test(String(b.createdBlock))) {
+    return c.json({ error: 'createdBlock must be an integer' }, 400);
+  }
+  const out = await upsertWithdrawalStepIntent(c.env, c.req.param('id'), b.step, String(b.amountUsdc6), b.createdBlock ?? null);
+  if (!out.ok) return c.json({ error: 'step intent refused', reasons: out.reasons }, out.status);
+  return c.json(out.step);
+});
+
+internal.post('/withdrawals/:id/steps/update', async (c) => {
+  const b = await c.req.json<{
+    step: string;
+    status?: 'sent' | 'confirmed' | 'failed';
+    providerRef?: string;
+    txHash?: string;
+    bumpAttempt?: boolean;
+  }>();
+  if (b.step !== 'vault' && b.step !== 'transfer') return c.json({ error: `step ('vault'|'transfer') required` }, 400);
+  if (b.status !== undefined && !['sent', 'confirmed', 'failed'].includes(b.status)) {
+    return c.json({ error: 'status must be sent|confirmed|failed' }, 400);
+  }
+  const out = await updateWithdrawalStep(c.env, c.req.param('id'), b.step, b);
+  if (!out.ok) return c.json({ error: 'step update refused', reasons: out.reasons }, out.status);
+  return c.json(out.step);
+});
+
+internal.post('/withdrawals/:id/complete', async (c) => {
+  const b = await c.req.json<{ amountUsdc6: string }>();
+  if (!INT.test(String(b.amountUsdc6))) return c.json({ error: 'integer amountUsdc6 required' }, 400);
+  const out = await completeWithdrawal(c.env, c.req.param('id'), String(b.amountUsdc6));
+  if (!out.ok) return c.json({ error: 'completion refused', reasons: out.reasons }, out.status);
+  return c.json({ ok: true, idempotent: out.idempotent, withdrawal: out.withdrawal });
+});
+
+internal.post('/withdrawals/:id/fail', async (c) => {
+  const b = await c.req.json<{ reason: string }>();
+  if (!b.reason || typeof b.reason !== 'string') return c.json({ error: 'reason required' }, 400);
+  const out = await failWithdrawal(c.env, c.req.param('id'), b.reason);
+  if (!out.ok) return c.json({ error: 'fail refused', reasons: out.reasons }, out.status);
+  return c.json({ ok: true, withdrawal: out.withdrawal });
 });
 
 /**
