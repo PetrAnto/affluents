@@ -130,13 +130,22 @@ export interface BucketTotals {
   earnUsdc6: bigint;
   exceptionUsdc6: bigint;
   totalReceivedUsdc6: bigint;
+  /** USDC credited to Spend by withdrawals (provenance: withdrawal_id) — never part of "auto-swapped from". */
+  spendWithdrawnUsdc6: bigint;
+  /** USDC credited to Reserve by withdrawals, shown as "incl. … withdrawn from Earn". */
+  reserveWithdrawnUsdc6: bigint;
 }
 
 export async function getDashboardData(env: Env) {
   const [sums, invoices, rule, exceptions] = await Promise.all([
+    // wd_total splits each bucket's USDC by provenance (amendment A2:
+    // exactly one of invoice_id/withdrawal_id is set per row), so the Spend
+    // card's "auto-swapped from" figure never absorbs withdrawn USDC.
     env.DB.prepare(
-      `SELECT bucket, token, SUM(delta6) AS total FROM ledger GROUP BY bucket, token`,
-    ).all<{ bucket: string; token: string; total: number }>(),
+      `SELECT bucket, token, SUM(delta6) AS total,
+              SUM(CASE WHEN withdrawal_id IS NOT NULL THEN delta6 ELSE 0 END) AS wd_total
+       FROM ledger GROUP BY bucket, token`,
+    ).all<{ bucket: string; token: string; total: number; wd_total: number }>(),
     env.DB.prepare(
       `SELECT i.*, w.address AS deposit_address
        FROM invoices i LEFT JOIN deposit_wallets w ON w.id = i.wallet_id
@@ -162,12 +171,22 @@ export async function getDashboardData(env: Env) {
     earnUsdc6: 0n,
     exceptionUsdc6: 0n,
     totalReceivedUsdc6: 0n,
+    spendWithdrawnUsdc6: 0n,
+    reserveWithdrawnUsdc6: 0n,
   };
   for (const r of sums.results) {
     const v = BigInt(r.total);
+    const wd = BigInt(r.wd_total ?? 0);
     if (r.bucket === 'spend' && r.token === 'EURC') totals.spendEurc6 += v;
-    if (r.bucket === 'spend' && r.token === 'USDC') totals.spendInUsdc6 += v;
-    if (r.bucket === 'reserve' && r.token === 'USDC') totals.reserveUsdc6 += v;
+    if (r.bucket === 'spend' && r.token === 'USDC') {
+      // Only invoice-pipeline rows are FX input ("auto-swapped from").
+      totals.spendInUsdc6 += v - wd;
+      totals.spendWithdrawnUsdc6 += wd;
+    }
+    if (r.bucket === 'reserve' && r.token === 'USDC') {
+      totals.reserveUsdc6 += v;
+      totals.reserveWithdrawnUsdc6 += wd;
+    }
     if (r.bucket === 'earn' && r.token === 'USDC') totals.earnUsdc6 += v;
     if (r.bucket === 'exception_hold' && r.token === 'USDC') totals.exceptionUsdc6 += v;
   }
@@ -195,7 +214,12 @@ export async function getDashboardData(env: Env) {
     /* fx journal not migrated yet */
   }
 
-  return { totals, invoices: invoices.results, rule, exceptions: exceptions.results, fxHalted, fxLatestSource };
+  // Withdraw-from-Earn journal for the dashboard control (in-progress state,
+  // history lines, failed note). Recent 20 — the control itself only needs
+  // "is one non-terminal" plus completed rows for the history.
+  const withdrawals = await listWithdrawals(env);
+
+  return { totals, invoices: invoices.results, rule, exceptions: exceptions.results, fxHalted, fxLatestSource, withdrawals };
 }
 
 // ---- execution journal + completion (orchestrator only) ----

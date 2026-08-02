@@ -71,6 +71,22 @@ td.last{text-align:right;padding-right:0;white-space:nowrap}
 td.last a{font-size:12.5px;text-decoration:none}
 .rlink{border:none;background:none;color:var(--river);font-family:var(--font-body);font-size:12.5px;font-weight:400;cursor:pointer;padding:0;margin-left:12px}
 .rlink:hover{color:var(--ink)}
+.wd{display:flex;flex-direction:column;gap:9px;margin-top:4px;padding-top:12px;border-top:1px solid var(--contour)}
+.wd .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wd input.amt{width:110px;border:1px solid var(--contour);border-radius:6px;padding:8px 10px;font-family:var(--font-body);font-size:13px;font-weight:500;text-align:right;color:var(--ink);background:var(--surface);outline:none;font-feature-settings:'tnum'}
+.wd input.amt:focus{border-color:var(--river)}
+.wd .max{border:none;background:none;color:var(--river);font-family:var(--font-body);font-size:12px;cursor:pointer;padding:0}
+.wd .dest{display:flex;gap:6px}
+.wd .dest button{border:1px solid var(--contour);border-radius:6px;background:var(--surface);color:var(--muted);font-family:var(--font-body);font-size:12px;padding:7px 10px;cursor:pointer}
+.wd .dest button.on{border-color:var(--earn);color:var(--ink);font-weight:500}
+.wd .go{border:none;border-radius:7px;background:var(--earn);color:#fff;font-family:var(--font-body);font-size:12.5px;font-weight:500;padding:9px 14px;cursor:pointer}
+.wd .go:disabled{background:var(--contour);color:var(--muted);cursor:default}
+.wd .confirm{font-size:13px;font-weight:500}
+.wd .err{font-size:12px;color:var(--reserve)}
+.wd .note{font-size:12.5px;color:var(--muted)}
+.wd .prog{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500}
+.wd .prog .pd{width:7px;height:7px;border-radius:50%;background:var(--earn);animation:wdpulse 1.4s ease-in-out infinite}
+@keyframes wdpulse{0%,100%{opacity:.35}50%{opacity:1}}
 .spring{flex:1 1 0}
 .mark{padding:44px 0 26px;display:flex;flex-direction:column;align-items:center;gap:7px}
 .mark svg{color:var(--contour)}
@@ -179,7 +195,70 @@ function stepChart(invoices: InvoiceRow[], now: Date): string {
 }
 
 export function dashboardPage(data: DashData, secret: string, explorer: string, now: Date, fxAdapter = 'treasury'): string {
-  const { totals, invoices, rule, exceptions, fxHalted, fxLatestSource } = data;
+  const { totals, invoices, rule, exceptions, fxHalted, fxLatestSource, withdrawals } = data;
+
+  // Withdraw-from-Earn control state (WITHDRAW_HANDOFF.md, signed copy).
+  // Never internal state names; never a failure state for money that exists.
+  const wdList = withdrawals ?? [];
+  const wdPending = wdList.find((w) => w.withdrawal.state === 'pending');
+  const wdLatest = wdList[0];
+  const destName = (d: string) => (d === 'spend' ? 'Spend' : 'Reserve');
+  const earnZero = totals.earnUsdc6 <= 0n;
+  let wdControl: string;
+  if (wdPending) {
+    wdControl = `<div class="wd" id="wd" data-secret="${esc(secret)}" data-poll="1">
+      <div class="prog"><i class="pd"></i>Withdrawal in progress</div>
+      <div class="note tnum">${format6(asUsdc6(BigInt(wdPending.withdrawal.amount_usdc6)))} USDC to ${destName(wdPending.withdrawal.destination)}</div>
+    </div>`;
+  } else if (earnZero) {
+    wdControl = `<div class="wd"><div class="note">Nothing in Earn yet</div></div>`;
+  } else {
+    // A pre-dispatch failure is the only reachable failed state — funds
+    // provably still in Earn (fail is server-refused after any dispatch).
+    const failedNote =
+      wdLatest && wdLatest.withdrawal.state === 'failed'
+        ? `<div class="err">Withdrawal not completed — funds remain in Earn.</div>`
+        : '';
+    wdControl = `<div class="wd" id="wd" data-secret="${esc(secret)}" data-max="${format6(totals.earnUsdc6 as Usdc6, 6)}">
+      ${failedNote}
+      <div class="row">
+        <input class="amt" id="wdAmt" placeholder="0.00" inputmode="decimal" aria-label="Amount in USDC">
+        <button class="max" id="wdMax" type="button">Max</button>
+        <span class="dest" id="wdDest">
+          <button type="button" class="on" data-dest="reserve">To Reserve (USDC)</button>
+          <button type="button" data-dest="spend">To Spend (USDC)</button>
+        </span>
+      </div>
+      <div class="row">
+        <button class="go" id="wdGo" type="button">Withdraw from Earn</button>
+        <span class="confirm" id="wdConfirm" hidden></span>
+        <button class="go" id="wdYes" type="button" hidden>Confirm</button>
+        <button class="max" id="wdNo" type="button" hidden>Cancel</button>
+      </div>
+      <div class="err" id="wdErr" hidden></div>
+    </div>`;
+  }
+
+  // Completed withdrawals: honest history lines with both explorer links.
+  const wdRows = wdList
+    .filter((w) => w.withdrawal.state === 'complete')
+    .map((w) => {
+      const tx = (step: string) => w.steps.find((s) => s.step === step)?.tx_hash;
+      const links = [
+        tx('vault') ? `<a href="${explorer}/tx/${esc(tx('vault')!)}" target="_blank" rel="noopener">Vault ↗</a>` : null,
+        tx('transfer') ? `<a href="${explorer}/tx/${esc(tx('transfer')!)}" target="_blank" rel="noopener">Transfer ↗</a>` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return `<div class="exc">
+        <i class="dot" style="background:var(--earn)"></i>
+        <div class="body">
+          <span class="t tnum">${format6(asUsdc6(BigInt(w.withdrawal.amount_usdc6)))} USDC · Earn → ${destName(w.withdrawal.destination)}</span>
+          <span class="m">${fmtDate(w.withdrawal.created_at)}${links ? ` · ${links}` : ''}</span>
+        </div>
+      </div>`;
+    })
+    .join('\n');
   // Journaled rate_source of the latest completed conversion wins; the env
   // adapter name is only the pre-journal fallback.
   const fxNote =
@@ -259,6 +338,7 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
             <div class="name">Spend</div>
             <div class="stat tnum">${format6(totals.spendEurc6 as Usdc6)} <span>EURC</span></div>
             <div class="cap tnum">Auto-swapped from ${format6(totals.spendInUsdc6 as Usdc6)} USDC${fxNote} · ${rule.spend_pct}% of each payment</div>
+            ${totals.spendWithdrawnUsdc6 > 0n ? `<div class="cap tnum">+ ${format6(totals.spendWithdrawnUsdc6 as Usdc6)} USDC — Withdrawn from Earn</div>` : ''}
           </div>
         </div>
         <div class="bcard">
@@ -266,7 +346,9 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
           <div class="inner">
             <div class="name">Reserve</div>
             <div class="stat tnum">${format6(totals.reserveUsdc6 as Usdc6)} <span>USDC</span></div>
-            <div class="cap tnum">Tax reserve · ${rule.reserve_pct}% of each payment</div>
+            <div class="cap tnum">Tax reserve · ${rule.reserve_pct}% of each payment${
+              totals.reserveWithdrawnUsdc6 > 0n ? ` · incl. ${format6(totals.reserveWithdrawnUsdc6 as Usdc6)} USDC withdrawn from Earn` : ''
+            }</div>
           </div>
         </div>
         <div class="bcard">
@@ -275,6 +357,7 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
             <div class="name">Earn <em>— Demo Vault, on-chain position</em></div>
             <div class="stat tnum">${format6(totals.earnUsdc6 as Usdc6)} <span>USDC</span></div>
             <div class="cap tnum">${rule.earn_pct}% of each payment</div>
+            ${wdControl}
           </div>
         </div>
       </div>
@@ -313,6 +396,15 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
         ? `<section>
       <div class="slabel">Exceptions</div>
       ${excRows}${fxRows ? `\n      ${fxRows}` : ''}
+    </section>`
+        : ''
+    }
+
+    ${
+      wdRows
+        ? `<section>
+      <div class="slabel">Withdrawals</div>
+      ${wdRows}
     </section>`
         : ''
     }
@@ -391,6 +483,81 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
       var prev = btn.textContent;
       btn.textContent = 'Copied ✓';
       setTimeout(function () { btn.textContent = prev; }, 1800);
+    });
+  });
+})();
+(function () {
+  /* Withdraw from Earn (WITHDRAW_HANDOFF.md Phase 3). Amounts are parsed by
+     STRING decimal manipulation — never floats — into integer Usdc6. A
+     confirmation step precedes dispatch (Gate 0 decision 1). While any
+     withdrawal is non-terminal the card polls and reloads on completion. */
+  var wd = document.getElementById('wd');
+  if (!wd) return;
+  var secret = wd.dataset.secret;
+
+  function pollUntilDone() {
+    var timer = setInterval(function () {
+      fetch('/dashboard/' + secret + '/withdrawals').then(function (r) { return r.json(); }).then(function (data) {
+        var pending = (data.withdrawals || []).some(function (w) { return w.withdrawal.state === 'pending'; });
+        if (!pending) { clearInterval(timer); window.location.reload(); }
+      }).catch(function () {});
+    }, 5000);
+  }
+  if (wd.dataset.poll) { pollUntilDone(); return; }
+
+  var amt = document.getElementById('wdAmt');
+  var err = document.getElementById('wdErr');
+  var go = document.getElementById('wdGo');
+  var yes = document.getElementById('wdYes');
+  var no = document.getElementById('wdNo');
+  var confirmEl = document.getElementById('wdConfirm');
+  var dest = 'reserve';
+  document.querySelectorAll('#wdDest button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      dest = b.dataset.dest;
+      document.querySelectorAll('#wdDest button').forEach(function (o) { o.classList.toggle('on', o === b); });
+    });
+  });
+  document.getElementById('wdMax').addEventListener('click', function () { amt.value = wd.dataset.max; });
+
+  /* "0.01" → "10000": integer + fraction padded to 6, exact, no floats. */
+  function toUsdc6(s) {
+    s = (s || '').trim();
+    if (!/^\d+(\.\d{1,6})?$/.test(s)) return null;
+    var parts = s.split('.');
+    var frac = parts[1] || '';
+    while (frac.length < 6) frac += '0';
+    var v = (parts[0] + frac).replace(/^0+(?=\d)/, '');
+    return v;
+  }
+  function showErr(msg) { err.textContent = msg; err.hidden = false; }
+  function reset() {
+    confirmEl.hidden = true; yes.hidden = true; no.hidden = true;
+    go.hidden = false; go.disabled = false;
+  }
+
+  go.addEventListener('click', function () {
+    err.hidden = true;
+    var v = toUsdc6(amt.value);
+    if (v === null) { showErr('Enter an amount in USDC, e.g. 0.01'); return; }
+    confirmEl.textContent = 'Move ' + amt.value.trim() + ' USDC from Earn to ' + (dest === 'spend' ? 'Spend' : 'Reserve') + '?';
+    confirmEl.hidden = false; yes.hidden = false; no.hidden = false; go.hidden = true;
+  });
+  no.addEventListener('click', reset);
+  yes.addEventListener('click', function () {
+    yes.disabled = true;
+    fetch('/dashboard/' + secret + '/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountUsdc6: toUsdc6(amt.value), destination: dest }),
+    }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); }).then(function (res) {
+      yes.disabled = false;
+      if (!res.ok) { reset(); showErr(res.body.error || 'Withdrawal refused'); return; }
+      confirmEl.textContent = 'Withdrawal in progress';
+      yes.hidden = true; no.hidden = true;
+      pollUntilDone();
+    }).catch(function () {
+      yes.disabled = false; reset(); showErr('Network error — nothing was sent');
     });
   });
 })();
