@@ -606,11 +606,16 @@ export async function createWithdrawal(
   if (reasons.length > 0) return { ok: false, status: 400, reasons };
 
   const id = `wd_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+  // CAST is load-bearing: the amount is bound as a STRING (house style for
+  // 6-dec integers), and SQLite's cross-type ordering puts every TEXT above
+  // every INTEGER — without the CAST this predicate is false for ANY amount,
+  // refusing valid withdrawals (live incident 2026-08-02, withdrawal #1).
+  // Column affinity converts the INSERTed value; expressions get no affinity.
   const res = await env.DB.prepare(
     `INSERT INTO withdrawals (id, amount_usdc6, destination)
      SELECT ?1, ?2, ?3
      WHERE NOT EXISTS (SELECT 1 FROM withdrawals WHERE state = 'pending')
-       AND ?2 <= COALESCE((SELECT SUM(delta6) FROM ledger WHERE bucket = 'earn' AND token = 'USDC'), 0)`,
+       AND CAST(?2 AS INTEGER) <= COALESCE((SELECT SUM(delta6) FROM ledger WHERE bucket = 'earn' AND token = 'USDC'), 0)`,
   )
     .bind(id, input.amountUsdc6, input.destination)
     .run();
