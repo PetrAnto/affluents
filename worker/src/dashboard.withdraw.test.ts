@@ -149,6 +149,16 @@ describe('dashboard withdraw control states', () => {
     expect(html).toContain('id="wdGo"'); // control stays usable
   });
 
+  it('defluence glyph animates during "Withdrawal in progress" and ships hidden with the form', () => {
+    const pending = render(fixture({ withdrawals: [wdState({ state: 'pending' })] }));
+    // visible in the pending card, reverse-drawn earn-branch + channel paths
+    expect(pending).toContain('class="defl"');
+    expect(pending).toContain('class="d br"');
+    expect(pending).toContain('class="d ch"');
+    const form = render(fixture({}));
+    expect(form).toContain('id="wdDefl" hidden'); // revealed by JS on confirm
+  });
+
   it('completed withdrawal: history line with both explorer links', () => {
     const html = render(fixture({ withdrawals: [wdState({})] }));
     expect(html).toContain('Withdrawals');

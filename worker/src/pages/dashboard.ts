@@ -87,6 +87,10 @@ td.last a{font-size:12.5px;text-decoration:none}
 .wd .prog{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500}
 .wd .prog .pd{width:7px;height:7px;border-radius:50%;background:var(--earn);animation:wdpulse 1.4s ease-in-out infinite}
 @keyframes wdpulse{0%,100%{opacity:.35}50%{opacity:1}}
+.wd .defl svg{display:block}
+.wd .defl .d{stroke-dasharray:100;stroke-dashoffset:-100;opacity:0;animation:wd-drain 2.8s ease-in-out infinite}
+.wd .defl .ch{animation-delay:.9s}
+@keyframes wd-drain{0%{stroke-dashoffset:-100;opacity:0}12%{opacity:1}52%{stroke-dashoffset:0;opacity:1}74%{opacity:0}100%{stroke-dashoffset:0;opacity:0}}
 .spring{flex:1 1 0}
 .mark{padding:44px 0 26px;display:flex;flex-direction:column;align-items:center;gap:7px}
 .mark svg{color:var(--contour)}
@@ -204,10 +208,28 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
   const wdLatest = wdList[0];
   const destName = (d: string) => (d === 'spend' ? 'Spend' : 'Reserve');
   const earnZero = totals.earnUsdc6 <= 0n;
+
+  // Defluence glyph (BRAND: the confluence run in reverse — flow leaving the
+  // vault back downstream). Same 48×24 geometry, stroke discipline, and
+  // palette tokens as the payment page's signature animation; reverse
+  // drawing comes from animating stroke-dashoffset −100 → 0, which traces a
+  // pathLength=100 path from its far end backward. Purely cosmetic.
+  const deflGlyph = `<div class="defl" aria-hidden="true">
+      <svg width="96" height="48" viewBox="0 0 48 24" fill="none">
+        <g stroke="var(--contour)" stroke-width="1.5" stroke-linecap="round">
+          <path d="M2 4 C10 4, 12 12, 16 12" vector-effect="non-scaling-stroke"/><path d="M2 20 C10 20, 12 12, 16 12" vector-effect="non-scaling-stroke"/>
+          <path d="M2 12 L46 12" vector-effect="non-scaling-stroke"/>
+          <path d="M32 12 C36 12, 38 4, 46 4" vector-effect="non-scaling-stroke"/><path d="M32 12 C36 12, 38 20, 46 20" vector-effect="non-scaling-stroke"/>
+        </g>
+        <path class="d br" d="M32 12 C36 12, 38 20, 46 20" stroke="var(--earn)" stroke-width="1.5" stroke-linecap="round" pathLength="100" vector-effect="non-scaling-stroke"/>
+        <path class="d ch" d="M2 12 L32 12" stroke="var(--earn)" stroke-width="1.5" stroke-linecap="round" pathLength="100" vector-effect="non-scaling-stroke"/>
+      </svg>
+    </div>`;
   let wdControl: string;
   if (wdPending) {
     wdControl = `<div class="wd" id="wd" data-secret="${esc(secret)}" data-poll="1">
       <div class="prog"><i class="pd"></i>Withdrawal in progress</div>
+      ${deflGlyph}
       <div class="note tnum">${format6(asUsdc6(BigInt(wdPending.withdrawal.amount_usdc6)))} USDC to ${destName(wdPending.withdrawal.destination)}</div>
     </div>`;
   } else if (earnZero) {
@@ -235,6 +257,7 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
         <button class="go" id="wdYes" type="button" hidden>Confirm</button>
         <button class="max" id="wdNo" type="button" hidden>Cancel</button>
       </div>
+      <div id="wdDefl" hidden>${deflGlyph}</div>
       <div class="err" id="wdErr" hidden></div>
     </div>`;
   }
@@ -561,6 +584,8 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
       if (!res.ok) { reset(); showErr(res.body.error || 'Withdrawal refused'); return; }
       confirmEl.textContent = 'Withdrawal in progress';
       yes.hidden = true; no.hidden = true;
+      var defl = document.getElementById('wdDefl');
+      if (defl) defl.hidden = false;
       pollUntilDone();
     }).catch(function () {
       yes.disabled = false; reset(); showErr('Network error — nothing was sent');
