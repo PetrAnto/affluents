@@ -1,8 +1,9 @@
 # PROGRESS — Affluents
-Updated: 2026-07-28 10:00 UTC
-Phase: 4 — Read-only client portal LIVE (tokenized receipts at /r/:token)
-on top of the complete split pipeline with LIVE App Kit FX
-→ next: work-queue item 3 (see operator queue); wallet pool refill before demo
+Updated: 2026-08-02 21:10 UTC
+Phase: 4 — Withdraw-from-Earn LIVE (dashboard control → two-hop vault
+withdrawal, nine real withdrawals incl. three kill-state reconciliations)
+on top of the client portal and the split pipeline with LIVE App Kit FX
+→ next: wallet pool refill before demo; then Phase 5 submission package
 Live Worker URL: https://affluents.money (canonical, custom domain + www)
 GitHub: https://github.com/PetrAnto/affluents
 
@@ -594,6 +595,130 @@ line, never a silent default.
 - `swept_usdc6` gap from 2026-07-23 unchanged (out of scope per handoff).
 - Wallet pool down to 2 free after the two test invoices — refill before
   demo day (backlog item already noted).
+
+## Withdraw-from-Earn shipped end-to-end — 2026-08-02
+Work-queue item 3, built to WITHDRAW_HANDOFF.md (operator-uploaded signed
+decisions + in-session amendments at the evidence gates; the handoff file
+deleted in this cycle's final commit per its own instruction — its full
+content and the gate record live in git history, commits 4f27d10..this).
+First cycle where a user-facing surface triggers a money movement.
+
+**Signed decisions as amended (2026-08-02, after Phase 0 evidence):**
+destination selector, BOTH USDC — "To Spend (USDC)" (ledger-labeled
+"Withdrawn from Earn") / "To Reserve (USDC)"; NO FX leg (EURC-on-withdraw
+is roadmap; the FX journal is invoice-locked — fx_intents.invoice_id NOT
+NULL + five files of invoice-shaped code); NEW additive journal (0005),
+since executions' step CHECK can't be ALTERed; partial withdrawals ≥ 10000
+Usdc6 ≤ position; two-hop traceability (each hop independently journaled +
+reconcilable; crash between hops = visible "Withdrawal in progress", NEVER
+failed — parent fail REFUSED once any hop is 'sent' or 'confirmed' (A1));
+ledger "exactly one of invoice_id/withdrawal_id" enforced in code at the
+two ledger writers (A2 — SQLite can't add a CHECK by ALTER); at most ONE
+non-terminal withdrawal (accepted: a stuck one blocks new ones — safety).
+
+**What was built:**
+- **Migration 0005** (operator-applied --local then --remote): withdrawals
+  (amount CHECK ≥10000, destination CHECK, state pending|complete|failed,
+  created_block), withdrawal_steps (per-hop, executions-shaped status,
+  provider_ref, UNIQUE(withdrawal_id, step)), ledger.withdrawal_id
+  (nullable ADD COLUMN, provenance).
+- **Worker**: POST /dashboard/:secret/withdraw — ONE conditional INSERT
+  (wallet-claim style) carrying both guards (no concurrent pending, amount
+  ≤ SUM(ledger earn)); GET /dashboard/:secret/withdrawals (read-only);
+  internal /withdrawals/:id + /steps + /steps/update (forward-only,
+  divergence-guarded, 'confirmed' requires tx_hash) + /complete (atomic
+  batch: earn −X + destination +X USDC, invoice_id NULL + withdrawal_id
+  set, per-hop tx hashes, in-statement state='pending' re-check on every
+  ledger INSERT so a raced double-complete writes nothing) + /fail
+  (refused once any hop dispatched); pullWork feed gains withdrawals.
+- **Orchestrator** (withdraw.ts): two hops with runStep semantics —
+  DemoVault.withdraw(uint256) contract execution from the treasury SCA,
+  then exact USDC transfer to the journaled destination wallet, both Gas
+  Station sponsored. Reconciliation order: journaled provider_ref queried
+  at Circle FIRST (never blind re-send); **deterministic Circle
+  idempotencyKey per (step, attempt)** closes the send-then-journal crash
+  window — a re-dispatch returns the SAME transaction; vault hop also
+  scans Withdraw events (emitter=vault, owner=treasury, exact amount) from
+  created_block before any no-ref dispatch. created_block: NULL at
+  creation (Worker never touches the chain), written once by the
+  orchestrator's first step-intent POST via COALESCE.
+- **Dashboard control** (the only dashboard change): amount input with
+  full-precision Max, destination selector, confirmation step ("Move X
+  USDC from Earn to {destination}?") before any dispatch, refusals shown
+  verbatim, "Withdrawal in progress" + poll-and-reload for any
+  non-terminal withdrawal, "Nothing in Earn yet" zero state, pre-dispatch
+  failure note ("Withdrawal not completed — funds remain in Earn."),
+  Withdrawals history with both explorer links per completion, and the
+  **defluence animation** — the brand confluence run in reverse
+  (stroke-dashoffset −100→0 reverse-draws the earn branch draining out
+  through the channel; same geometry/tokens as the pay-page signature).
+
+**Phase 0 measurement (A3, operator-witnessed, 2026-07-29):** Gas Station
+sponsors vault withdraw (gas payer = bundler, treasury exact ±10000);
+Withdraw(owner=treasury, assets) emitted by the vault = the reconciliation
+signal; 0.01 withdrawn (0x58b34301…) and immediately re-deposited
+(0xeaa7caeb…), position restored to exactly 1,200,000 before Phase 1.
+
+**Proven live on testnet — NINE completed withdrawals, 0.11 USDC total,
+conservation exact three ways** (journal sum 110,000 == 1,200,000 −
+on-chain position 1,090,000 == ledger earn total; treasury 3,450,000
+net-unchanged through all nine):
+- #1 clean run 0.01→Reserve (vault 0x8d007a23…, transfer 0x821a1947… to
+  0x6B04…6Ffe).
+- #2 **graceful-kill window 2, transfer hop** (wd_d880d05a): pm2 stop
+  after 'sent' — the transfer LANDED on-chain (0x3cd6394f… to
+  0x083b…dBC8) while the engine was down and the journal didn't know;
+  restart logged 'transfer reconciled from Circle ref', completed with
+  ZERO re-send (counter-scan: exactly one transfer in the window).
+- #3 **abrupt-SIGKILL window 2, vault hop** (wd_3fd50e4d): killed with
+  ref journaled, no result; vault tx 0xb5980082… landed during the ~35min
+  outage; restart reconciled from ref, then dispatched the never-journaled
+  transfer fresh (0x23192dea…). Exactly one Withdraw event.
+- #4 **TRUE window 1** (wd_e0e3e1e9): SIGKILL landed mid-Circle-call —
+  journal frozen at vault 'intent', provider_ref NULL, attempt_count 0.
+  **Counter-scan before restart, stated explicitly: NO Withdraw event
+  on-chain and position unchanged (1,170,000) — the killed request never
+  executed.** Restart: event scan found nothing → re-dispatch with the
+  IDENTICAL attempt-0 deterministic key → vault 0xbddb89f1…, transfer
+  0xf9dde4ae…, completed. Exactly one Withdraw event ever existed.
+- Over-position refusal proven against the live endpoint (amount =
+  balance+1 → 409 "exceeds the Earn balance", nothing written).
+- #5–#9: operator button-initiated (incl. the "0,01" comma path and two
+  animation tests), all confirmed via the dialog, all completed:
+  wd_de48294f 0.01→R, wd_c203147a 0.01→S, wd_4473396867 0.02→R,
+  wd_3d6e97a1 0.02→R, wd_886947ea 0.01→R. Operator-acknowledged in bulk.
+
+**Incidents (both caught live by the operator, both now regression-tested
+at the layer that actually failed):**
+1. **CAST incident:** the create guard bound the amount as a STRING and
+   SQLite's cross-type ordering puts every TEXT above every INTEGER — the
+   conditional-INSERT predicate was false for ANY amount ("10000 exceeds
+   1200000"). Failed closed; nothing written. Fix: CAST(?2 AS INTEGER).
+   Why 141 tests missed it: the unit fake re-implements predicates in JS
+   with intended semantics. New suite runs createWithdrawal's REAL
+   statements on REAL SQLite (node:sqlite) over the REAL 0005 migration
+   file — 3 of 4 cases fail against the pre-fix SQL.
+2. **Template-literal regex incident:** the client validator ships through
+   a TS template literal, which cooks \d to 'd' — the emitted regex
+   matched nothing and the UI refused all input before the confirm step.
+   Fix: doubled escapes (matching the rule editor's existing \\D), comma
+   normalized to dot (EU keyboards), zero refused client-side. New tests
+   EXTRACT toUsdc6 from the rendered HTML and execute it — testing what
+   the browser receives. Audit: no other un-doubled escape in any page.
+3. **Spend-card provenance fix:** withdrawal-credited USDC was absorbed
+   into the "Auto-swapped from" figure; bucket totals now split by
+   ledger provenance (withdrawal_id) — Spend shows "+ X USDC — Withdrawn
+   from Earn" separately; Reserve notes "incl. X withdrawn from Earn".
+
+**State/caveats:** suites 156 green (incl. real-SQLite guard suite,
+rendered-HTML validator suite, 9 page-state copy tests); portal DTO
+key-set snapshot byte-identical (zero portal changes); operator
+browser-verified the control, confirm step, cancel-writes-nothing, both
+destinations, history links, animation. A permanently-stuck withdrawal
+blocks new withdrawals by design (safety; operator-accepted). Intermittent
+GET /work 500 (5x pre-deploy, self-recovering) still unexplained — a
+wrangler tail ran through the entire live sequence and caught none.
+Wallet pool 1 free — refill before demo.
 
 ## Read-only client portal shipped — 2026-07-28
 Work-queue item 2, built to PORTAL_HANDOFF.md (operator-signed decisions

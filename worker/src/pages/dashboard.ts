@@ -84,7 +84,9 @@ td.last a{font-size:12.5px;text-decoration:none}
 .wd .confirm{font-size:13px;font-weight:500}
 .wd .err{font-size:12px;color:var(--reserve)}
 .wd .note{font-size:12.5px;color:var(--muted)}
-.wd .prog{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500}
+.wd .prog{display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;font-weight:500}
+.wd .defl{display:flex;justify-content:center}
+.wd[data-poll] .note{text-align:center}
 .wd .prog .pd{width:7px;height:7px;border-radius:50%;background:var(--earn);animation:wdpulse 1.4s ease-in-out infinite}
 @keyframes wdpulse{0%,100%{opacity:.35}50%{opacity:1}}
 .wd .defl svg{display:block}
