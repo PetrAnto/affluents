@@ -80,6 +80,44 @@ function fixture(over: { earnUsdc6?: bigint; spendWithdrawnUsdc6?: bigint; reser
 
 const render = (data: DashData) => dashboardPage(data, 'testsecret', 'https://testnet.arcscan.app', new Date('2026-08-02T16:30:00Z'));
 
+describe('withdraw amount parsing — the EMITTED client validator', () => {
+  /**
+   * Regression for the 2026-08-02 UI incident: the client script is emitted
+   * from a TS template literal, which cooks `\d` down to `d` — the shipped
+   * regex matched nothing and every amount was refused. These tests extract
+   * toUsdc6 FROM THE RENDERED HTML and execute it, so they validate what the
+   * browser actually receives, not what the source file appears to say.
+   */
+  function emittedToUsdc6(): (s: string) => string | null {
+    const html = render(fixture({}));
+    const start = html.indexOf('function toUsdc6');
+    expect(start).toBeGreaterThan(-1);
+    const end = html.indexOf('\n  }', start);
+    const src = html.slice(start, end + 4);
+    return new Function(`return ${src}`)() as (s: string) => string | null;
+  }
+
+  it('accepts dot input: "0.01" → 10000, "1.160000" → 1160000, "5" → 5000000', () => {
+    const toUsdc6 = emittedToUsdc6();
+    expect(toUsdc6('0.01')).toBe('10000');
+    expect(toUsdc6('1.160000')).toBe('1160000');
+    expect(toUsdc6('5')).toBe('5000000');
+  });
+
+  it('accepts comma input (EU keyboards): "0,01" → 10000', () => {
+    const toUsdc6 = emittedToUsdc6();
+    expect(toUsdc6('0,01')).toBe('10000');
+    expect(toUsdc6(' 1,5 ')).toBe('1500000');
+  });
+
+  it('still refuses empty, zero, garbage, and >6 decimals', () => {
+    const toUsdc6 = emittedToUsdc6();
+    for (const bad of ['', '0', '0.000000', '0,00', 'abc', '1.2.3', '1.2345678', '-1', '1e3']) {
+      expect(toUsdc6(bad), `input ${JSON.stringify(bad)}`).toBeNull();
+    }
+  });
+});
+
 describe('dashboard withdraw control states', () => {
   it('positive position, no pending: control with both USDC destinations and the confirm affordance', () => {
     const html = render(fixture({}));

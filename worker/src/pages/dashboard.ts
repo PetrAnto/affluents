@@ -520,14 +520,20 @@ export function dashboardPage(data: DashData, secret: string, explorer: string, 
   });
   document.getElementById('wdMax').addEventListener('click', function () { amt.value = wd.dataset.max; });
 
-  /* "0.01" → "10000": integer + fraction padded to 6, exact, no floats. */
+  /* "0.01" or "0,01" → "10000": comma normalized (EU keyboards), then
+     integer + fraction padded to 6 — exact string math, no floats. Zero is
+     refused here (nothing to move). NOTE: this code ships through a TS
+     template literal, so regex backslashes MUST be doubled (\\d) — a single
+     \d cooks down to a bare 'd' and the regex silently matches nothing
+     (live incident 2026-08-02; same convention as the rule editor's \\D). */
   function toUsdc6(s) {
-    s = (s || '').trim();
-    if (!/^\d+(\.\d{1,6})?$/.test(s)) return null;
+    s = (s || '').trim().replace(/,/g, '.');
+    if (!/^\\d+(\\.\\d{1,6})?$/.test(s)) return null;
     var parts = s.split('.');
     var frac = parts[1] || '';
     while (frac.length < 6) frac += '0';
-    var v = (parts[0] + frac).replace(/^0+(?=\d)/, '');
+    var v = (parts[0] + frac).replace(/^0+(?=\\d)/, '');
+    if (!/[1-9]/.test(v)) return null;
     return v;
   }
   function showErr(msg) { err.textContent = msg; err.hidden = false; }
