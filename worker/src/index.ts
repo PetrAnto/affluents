@@ -48,6 +48,20 @@ import type { Env, InvoiceRow } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Hono's default handler logs only the stack; Workers Logs drops the error
+// TEXT, which is exactly the datum needed to identify a D1 transient (seen
+// 2026-08-04: simultaneous 500s on /work and /wallets, message lost). Log
+// name/message/cause explicitly. routePath is the registered PATTERN
+// (':secret' stays literal) — never log req.path here: dashboard/portal
+// routes carry secrets in the path.
+app.onError((err, c) => {
+  const e = err as Error & { cause?: unknown };
+  const cause = e.cause instanceof Error ? `${e.cause.name}: ${e.cause.message}` : e.cause !== undefined ? String(e.cause) : '';
+  console.error(`unhandled ${c.req.method} ${c.req.routePath} — ${e.name}: ${e.message}${cause ? ` — cause: ${cause}` : ''}`);
+  console.error(err);
+  return c.text('Internal Server Error', 500);
+});
+
 const HTML_HEADERS = { 'Content-Type': 'text/html; charset=utf-8' };
 
 const DECK_PDF_URL = 'https://raw.githubusercontent.com/PetrAnto/affluents/main/design/checkpoint2-deck.pdf';

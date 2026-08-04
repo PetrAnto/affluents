@@ -1,9 +1,8 @@
 # PROGRESS — Affluents
-Updated: 2026-08-02 21:10 UTC
-Phase: 4 — Withdraw-from-Earn LIVE (dashboard control → two-hop vault
-withdrawal, nine real withdrawals incl. three kill-state reconciliations)
-on top of the client portal and the split pipeline with LIVE App Kit FX
-→ next: wallet pool refill before demo; then Phase 5 submission package
+Updated: 2026-08-04 22:00 UTC
+Phase: 4 — Withdraw-from-Earn LIVE; deposit wallet pool refilled to 13
+free (2026-08-04) — unblocked for fresh demo data
+→ next: demo-data session; then Phase 5 submission package
 Live Worker URL: https://affluents.money (canonical, custom domain + www)
 GitHub: https://github.com/PetrAnto/affluents
 
@@ -801,3 +800,64 @@ about the freelancer's allocation policy exposed.
   receipt" link) — anyone with the pay link can reach the receipt, which
   shows strictly less than the pay page itself. Accepted.
 - Wallet pool now 1 free after invoice 2026-016 — refill before demo day.
+
+## Deposit wallet pool refilled 1 → 13 free — 2026-08-04
+Operational mini-session per WALLET_POOL_HANDOFF.md (operator-signed
+decisions 2026-08-02; the handoff file deleted in this commit per its own
+instruction — full text in git history). No money moved, no existing rows
+touched, no migration.
+
+**Refill:** new one-shot `orchestrator/scripts/refill-pool.ts` created
+EXACTLY 12 new Circle SCA wallets (ARC-TESTNET, existing wallet set) and
+registered them via the existing `POST /api/internal/wallets` →
+`registerWallets` INSERT OR IGNORE (additive-only by unique address).
+Pool before (operator-run D1 count): 1 free / 9 retired / 0 assigned.
+After: **13 free / 9 retired**, verified two ways — operator-run count AND
+a full row listing diffed mechanically against the script's per-wallet
+output (12 addresses + Circle wallet ids exact match, every baseline 0,
+every invoice_id NULL, no duplicates, pre-existing free wallet
+0x2ca552…22c2 untouched). Orchestrator confirmed: work line
+`freeWallets=13` at 21:29:38Z (operator-pasted).
+
+**⚠️ circle-setup.ts is NO LONGER SAFE TO RE-RUN.** Its crash-recovery
+step registers EVERY wallet in the Circle wallet set into the deposit
+pool — and `create-role-wallets.ts` later created the treasury/spend/
+reserve ROLE wallets in the SAME set. A re-run today would insert the
+role wallets as free deposit wallets (the treasury could then be claimed
+by an invoice). Its top-up math (`10 − max(free, walletsAtCircle)`) also
+creates 0 wallets now. `refill-pool.ts` deliberately never lists the
+wallet set — it only touches wallets it just created; use it for all
+future refills (edit REFILL_COUNT).
+
+**Intermittent internal-API 500 ROOT-CAUSED (the "unexplained GET /work
+500" from 2026-08-02).** The refill's registration POST returned 500 with
+the write landed; a GET /work 500 struck in the same seconds. Workers
+Logs (observability was already enabled) captured both post-hoc via the
+Cloudflare telemetry query API
+(`POST /accounts/{id}/workers/observability/telemetry/query`, filters
+`$metadata.service=affluents` + `$metadata.error exists`):
+- POST /wallets invocation began 21:28:51.849Z, GET /work 21:29:06.032Z;
+  BOTH threw in the SAME millisecond (21:29:21.867/.868Z) inside
+  `D1DatabaseSessionAlwaysPrimary._sendOrThrow` — after ~30s and ~16s in
+  flight. Two independent requests dying simultaneously = the shared D1
+  primary session (a Cloudflare-side Durable Object) stalled then reset,
+  killing all in-flight queries. Infra transient, endpoint-agnostic.
+- Explains the historic pattern: GET /work is ~all internal traffic
+  (15s poll), so it is almost always the request in flight when the
+  hiccup lands — it only LOOKED endpoint-specific.
+- Explains write-landed-plus-500: the `registerWallets` batch committed
+  durably; the response was lost on the way back. INSERT OR IGNORE means
+  a retry would have been safe. Orchestrator self-heals next tick
+  (`tick error (1 in a row)` then normal) — no action needed there.
+- One datum was lost: Workers Logs kept only the STACK; the `Error:`
+  message line (which D1 transient exactly) was dropped. Fix (small,
+  additive, operator-gated in session): `app.onError` in
+  `worker/src/index.ts` now logs error name/message/cause explicitly —
+  and only `c.req.routePath` (the ':secret' PATTERN, never the real
+  path, which carries secrets on dashboard/portal routes). Response
+  body unchanged ("Internal Server Error", 500). Deployed version
+  45f04870-6637-4ac3-8e75-58b11dd5ebb7; tsc clean, 67 worker tests
+  green. Next occurrence self-documents the exact D1 error string.
+- Queued (NOT built): any retry strategy for internal-API calls —
+  needs the captured error string first; revisit if the transient
+  recurs at a demo-relevant moment.
