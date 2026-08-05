@@ -861,3 +861,45 @@ Cloudflare telemetry query API
 - Queued (NOT built): any retry strategy for internal-API calls —
   needs the captured error string first; revisit if the transient
   recurs at a demo-relevant moment.
+
+## Demo-data cycle complete — fresh dataset, screenshots, one withdrawal (2026-08-05)
+
+**Live money movements, shipped paths only. Zero backend changes** (one
+cosmetic landing.ts headline break, operator-requested, deployed d763072f).
+
+**Dataset (Gate 1, executed exactly):** 4 invoices paid + routed with live
+FX at 50 bps (2026-017 Studio Lumen 2.40 · 2026-018 Atlas Conseil 1.85 ·
+2026-019 Nordwind Media 2.15 · 2026-020 Marge & Pixel 1.30), 1 left
+awaiting (2026-021 Cabinet Ferro 1.95). All splits exact at 6-dec,
+excess=0 on every row. Portal receipt visited (200). Withdrawal
+wd_37faf2e336f141e9: 0.80 USDC Earn→Reserve via dashboard button, both
+hops confirmed (vault 0x38a308…, transfer 0x02cfff…), conservation band 0:
+vault on-chain 2,235,000 → 1,435,000 usdc6 exactly.
+
+**Books after (= deck-regen source of truth, verbatim from dashboard):**
+Total received 16.20 USDC · Spend 7.63 EURC (auto-swapped from 9.42 USDC,
+live rate) + 0.03 USDC withdrawn from Earn · Reserve 4.81 USDC (incl.
+0.89 withdrawn from Earn) · Earn 1.43 USDC (chain: 1,435,000 usdc6) ·
+Exception hold 0.50 (2026-005) · 14 invoices · 11 withdrawals.
+Reconciled against the 2026-08-05 Phase 0 baseline to the unit.
+
+**Screenshots:** design/screenshots/*.png — 14 fresh @2x Playwright frames
+of live pages (Gate 2 list), incl. the defluence pending card captured
+during the real withdrawal. capture.mjs committed; DASHBOARD_SECRET from
+env at runtime, page-only frames.
+
+**Incidents (resolved in-cycle):**
+- capture.mjs defluence detector v1 string-matched 'Withdrawal in
+  progress', which also sits in the dashboard's static JS → false
+  positive; one unnecessary-but-clean pm2 restart was made on that wrong
+  premise before D1 rows disproved it. Fixed: poll the withdrawals JSON
+  state; card locator requires the .defl glyph.
+- Post-deploy smoke capture raced custom-domain propagation by seconds
+  and photographed the old version once; re-run captured the new one.
+
+**Operator video:** design/media/pay-flow-mobile-rabby-2026-018.mp4 —
+real mobile payer journey (Rabby sign → verify animation → Paid). Deck /
+video cycle decides its use.
+
+**NOT started (next cycles):** deck regen, demo video, dashboard
+upgrades, EURC-on-withdraw, retry layer.
