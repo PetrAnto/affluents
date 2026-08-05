@@ -926,3 +926,25 @@ upgrades, EURC-on-withdraw, retry layer.
   paid invoice + one withdrawal will change the books) — a figures-only
   pass: slide 4 in BOTH deck files, re-print the PDF, redeploy. Nothing
   else reopens.
+
+## Video shoot complete + deck figures finalized (2026-08-05 evening)
+
+**Shoot (VIDEO_SCRIPT v2 hybrid) — all takes in `design/media/`:**
+- Mobile: `M1-create.mp4` · `M2M3-pay-receipt.mp4` (73s single take on
+  invoice 2026-023 Ferro & Fils 2.20 — covers shot 4 pay AND shot 8 live
+  receipt timeline; split at assembly). First M2 take was lost; re-taken on
+  a new identical invoice. Beat 3 timer overlay DROPPED (M2/shot5 are
+  different takes — honesty rule).
+- Desktop (Playwright recordVideo, `design/media/raw/`): `shot5-dashboard`
+  2:35 (routing of 2026-022 live) · `shot7-fx` (re-taken on 2026-023) ·
+  `shot9-withdraw` 0:52 (wd_a4d33a54780840ff, 0.30 Earn→Reserve, announced
+  + operator-go, both hops on ArcScan, band 0) · `shot10-history` 0:14.
+- Books moved twice during the shoot (2026-022 + 2026-023 payments, one
+  0.30 withdrawal). Final verbatim dashboard read: **20.60 in across ten
+  invoices · 9.65 EURC live (from 12.06) + 0.03 · 6.21 (incl. 1.19) ·
+  1.79 = vault 1,795,000 usdc6 on-chain (witnessed)**.
+- Deck slide 4 refreshed to that read in BOTH files; PDF re-printed
+  (10 slides, all 1080/1080); deployed b7f3cc13.
+- NEXT: assembly (HyperFrames; ffmpeg fallback) → design/media/
+  affluents-demo-3min.mp4, ≤3:00, <100MB. Capture modes shot5/7/9/10 in
+  capture.mjs if any take needs redoing.
