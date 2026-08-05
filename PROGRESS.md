@@ -903,3 +903,26 @@ video cycle decides its use.
 
 **NOT started (next cycles):** deck regen, demo video, dashboard
 upgrades, EURC-on-withdraw, retry layer.
+
+## Deck regenerated for final submission — 10 slides (2026-08-05)
+
+- Both `design/deck-print.html` and `worker/src/pages/deck.ts` (kept in
+  sync): title slide now "Final submission · August 2026" with the two-line
+  headline; slide 4 carries the frozen demo-data figures verbatim (16.20 in
+  across eight invoices · 7.63 EURC live · 4.81 · 1.43, after the 0.80
+  withdrawal; 0.50 held); dashboard slide uses dashboard-totals.png, payment
+  slide uses pay-paid.png; NEW slide 7 "Withdraw from Earn" (confirm card +
+  live defluence capture); engineering slide says 156 tests (67 worker + 70
+  orchestrator + 19 shared, all green today); Circle slide gains the App Kit
+  row; closing slide is "Shipped since Checkpoint 2".
+- `design/final-deck.pdf` regenerated (10 slides, all 1080/1080 — no
+  clipping; /Count 10; 1920x1080). `/deck.pdf` now re-serves final-deck.pdf
+  (checkpoint2-deck.pdf kept as the checkpoint artifact).
+- Print tooling committed as `design/deck-pdf.mjs` (script only; playwright
+  deps stay outside the repo per the 2026-07-23 rule — header documents the
+  one-time setup). capture.mjs gained a `withdrawcard` mode (element shot of
+  the Earn card confirm step; #wdYes never clicked).
+- **PLANNED (operator, 2026-08-05): after tomorrow's video shoot** (one new
+  paid invoice + one withdrawal will change the books) — a figures-only
+  pass: slide 4 in BOTH deck files, re-print the PDF, redeploy. Nothing
+  else reopens.

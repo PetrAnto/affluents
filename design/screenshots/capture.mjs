@@ -168,8 +168,24 @@ async function gate2() {
   await browser.close();
 }
 
+// Element shot of the Earn bucket card in the withdraw confirm state, for
+// the deck's withdraw slide. Same safety property as gate2's frame 10: the
+// confirm step is client-side; #wdYes is never clicked, nothing is written.
+async function withdrawcard() {
+  const secret = requireSecret();
+  const browser = await launch();
+  const page = await browser.newPage({ viewport: DESKTOP, deviceScaleFactor: 2 });
+  await page.goto(`${BASE_URL}/dashboard/${secret}`, { waitUntil: 'networkidle' });
+  await page.fill('#wdAmt', '0.25');
+  await page.click('#wdGo');
+  await page.locator('#wdConfirm').waitFor({ state: 'visible', timeout: 3000 });
+  await page.locator('.bcard:has(#wd)').screenshot({ path: join(OUT_DIR, 'withdraw-confirm-card.png') });
+  console.log('captured withdraw-confirm-card.png');
+  await browser.close();
+}
+
 const mode = process.argv[2];
-const modes = { smoke, defluence, gate2 };
+const modes = { smoke, defluence, gate2, withdrawcard };
 if (!modes[mode]) {
   console.error(`usage: node capture.mjs <${Object.keys(modes).join('|')}>`);
   process.exit(1);

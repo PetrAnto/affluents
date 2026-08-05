@@ -64,7 +64,7 @@ app.onError((err, c) => {
 
 const HTML_HEADERS = { 'Content-Type': 'text/html; charset=utf-8' };
 
-const DECK_PDF_URL = 'https://raw.githubusercontent.com/PetrAnto/affluents/main/design/checkpoint2-deck.pdf';
+const DECK_PDF_URL = 'https://raw.githubusercontent.com/PetrAnto/affluents/main/design/final-deck.pdf';
 
 function timingSafeEqual(a: string, b: string): boolean {
   const enc = new TextEncoder();
@@ -147,13 +147,13 @@ app.get('/', (c) => c.body(landingPage(), 200, HTML_HEADERS));
 app.get('/create', (c) => c.body(createPage(), 200, HTML_HEADERS));
 app.get('/deck', (c) => c.body(deckPage(), 200, HTML_HEADERS));
 
-/** The Checkpoint 2 PDF, re-served from the public repo so it opens in-browser. */
+/** The final-submission PDF, re-served from the public repo so it opens in-browser. */
 app.get('/deck.pdf', async (c) => {
   const upstream = await fetch(DECK_PDF_URL);
   if (!upstream.ok) return c.body('Deck PDF unavailable', 502, { 'Content-Type': 'text/plain; charset=utf-8' });
   return c.body(await upstream.arrayBuffer(), 200, {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': 'inline; filename="affluents-checkpoint2.pdf"',
+    'Content-Disposition': 'inline; filename="affluents-final-deck.pdf"',
   });
 });
 

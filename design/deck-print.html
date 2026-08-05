@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Affluents — Checkpoint 2</title>
+<title>Affluents — Final Submission</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -35,7 +35,7 @@
 <body>
 
 <section class="slide">
-  <span class="label">Checkpoint 2 · July 2026</span>
+  <span class="label">Final submission · August 2026</span>
   <span class="label" style="float:right;">Encode × Arc · DeFi Track</span>
   <div style="text-align:center;padding-top:130px;">
     <svg viewBox="1 3 46 18" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:520px;height:204px;">
@@ -48,7 +48,7 @@
       </g>
     </svg>
     <div class="display" style="font-size:88px;margin-top:36px;">affluents</div>
-    <div class="display" style="font-size:52px;margin-top:44px;">One payment in. Your money routes itself.</div>
+    <div class="display" style="font-size:52px;margin-top:44px;">One payment in.<br>Your money routes itself.</div>
     <div style="font-size:28px;color:var(--muted);margin-top:22px;">A programmable income router built on Arc</div>
   </div>
   <div class="footer"><span>affluents.money &nbsp;·&nbsp; github.com/PetrAnto/affluents</span><span class="r">Built solo by PetrAnto</span></div>
@@ -93,22 +93,22 @@
 <section class="slide">
   <span class="label">Working today on Arc testnet</span>
   <div class="display" style="font-size:62px;margin-top:44px;line-height:1.15;">
-    Four invoices routed end-to-end.<br>Not mocked, not local.
+    Eight invoices routed end-to-end.<br>Not mocked, not local.
   </div>
   <div class="cols" style="margin-top:72px;">
     <div class="col" style="width:820px;font-size:29px;line-height:1.6;color:var(--muted);">
-      <p class="row" style="padding:30px 0;">invoice → payment link + QR → MetaMask payment → on-chain verification → automatic routing</p>
-      <p class="row end" style="padding:30px 0;">Every movement linked to ArcScan. Conservation verified against both the ledger and on-chain balances.</p>
+      <p class="row" style="padding:30px 0;">invoice → payment link + QR → wallet payment → on-chain verification → automatic routing → live USDC→EURC FX</p>
+      <p class="row end" style="padding:30px 0;">Every movement linked to ArcScan. Conservation verified against both the ledger and on-chain balances. A 0.50 overpayment is held, never auto-routed.</p>
     </div>
     <div class="col" style="padding-left:120px;">
-      <p style="font-size:26px;color:var(--muted);">Across four invoices</p>
-      <p class="display" style="font-size:64px;margin-top:14px;">3.00 USDC in</p>
+      <p style="font-size:26px;color:var(--muted);">Across eight invoices</p>
+      <p class="display" style="font-size:64px;margin-top:14px;">16.20 USDC in</p>
       <p style="font-size:34px;line-height:1.9;margin-top:26px;">
-        <strong style="color:var(--river);">1.656 EURC</strong> Spend<br>
-        <strong style="color:var(--reserve);">0.75 USDC</strong> Reserve<br>
-        <strong style="color:var(--earn);">0.45 USDC</strong> Earn
+        <strong style="color:var(--river);">7.63 EURC</strong> Spend · live rate<br>
+        <strong style="color:var(--reserve);">4.81 USDC</strong> Reserve<br>
+        <strong style="color:var(--earn);">1.43 USDC</strong> Earn
       </p>
-      <p style="font-size:24px;color:var(--muted);margin-top:22px;">Exact to the micro-dollar.</p>
+      <p style="font-size:24px;color:var(--muted);margin-top:22px;">Exact to the micro-dollar, after a 0.80 withdrawal Earn → Reserve.</p>
     </div>
   </div>
   <div class="footer"><span>affluents</span><span class="r">04</span></div>
@@ -118,18 +118,36 @@
   <span class="label">The dashboard</span>
   <span class="label" style="float:right;">Live · Arc testnet</span>
   <div style="text-align:center;margin-top:26px;">
-    <div class="card"><img src="./screenshots/dashboard.png" alt="Affluents dashboard — buckets, income chart, split rules, invoice ledger" style="max-height:800px;max-width:1560px;"></div>
+    <div class="card"><img src="./screenshots/dashboard-totals.png" alt="Affluents dashboard — buckets with provenance, income chart, split rule, exceptions" style="max-height:800px;max-width:1560px;"></div>
   </div>
-  <div class="footer"><span>Buckets, income over time, split rules, and every invoice with its ArcScan links.</span><span class="r">05</span></div>
+  <div class="footer"><span>Buckets with withdrawal provenance, income over time, the split rule, and the exception hold — live.</span><span class="r">05</span></div>
 </section>
 
 <section class="slide" style="padding:70px 140px;">
   <span class="label">The payment experience</span>
   <span class="label" style="float:right;">Live · Arc testnet</span>
   <div style="text-align:center;margin-top:26px;">
-    <div class="card"><img src="./screenshots/03-payment.png" alt="Affluents payment page — paid invoice with routing summary" style="max-height:800px;max-width:1560px;"></div>
+    <div class="card"><img src="./screenshots/pay-paid.png" alt="Affluents payment page — paid invoice with live-rate routing summary" style="max-height:800px;max-width:1560px;"></div>
   </div>
-  <div class="footer"><span>A real paid invoice: verified on-chain, then split into Spend, Reserve, and Earn — automatically.</span><span class="r">06</span></div>
+  <div class="footer"><span>A real paid invoice: verified on-chain, then split into Spend, Reserve, and Earn — at a live FX rate.</span><span class="r">06</span></div>
+</section>
+
+<section class="slide">
+  <span class="label">Withdraw from Earn</span>
+  <span class="label" style="float:right;">Live · Arc testnet</span>
+  <div class="cols" style="margin-top:64px;">
+    <div class="col" style="width:820px;font-size:29px;line-height:1.6;">
+      <div class="display" style="font-size:54px;line-height:1.2;">Money moves back out the same way it came in.</div>
+      <p class="row" style="margin-top:48px;padding:28px 0;color:var(--muted);">Two journaled hops — vault redemption, then transfer — each intent-logged before dispatch, each confirmed on ArcScan.</p>
+      <p class="row end" style="padding:28px 0;color:var(--muted);">One withdrawal at a time, by design. Conservation holds to the unit: Earn −0.80, Reserve +0.80, vault position −0.80 on-chain.</p>
+    </div>
+    <div class="col" style="padding-left:100px;vertical-align:middle;">
+      <div class="card"><img src="./screenshots/withdraw-confirm-card.png" alt="Withdraw confirm step — Move 0.25 USDC from Earn to Reserve?" style="width:640px;"></div>
+      <div style="height:36px;"></div>
+      <div class="card"><img src="./screenshots/withdraw-defluence-pending-card-1.png" alt="Withdrawal in progress — defluence animation" style="width:640px;"></div>
+    </div>
+  </div>
+  <div class="footer"><span>The defluence — the confluence run in reverse — captured during the real 0.80 withdrawal.</span><span class="r">07</span></div>
 </section>
 
 <section class="slide">
@@ -145,10 +163,10 @@
     <div class="col">
       <p class="row" style="padding:28px 0;">Partial payments aggregate; overpayments are <strong style="color:var(--reserve);">held, never auto-routed</strong>.</p>
       <p class="row" style="padding:28px 0;">Intent-journaled, crash-safe pipeline — restarts reconcile, no double-spends.</p>
-      <p class="row end" style="padding:28px 0;">29 unit tests, plus a deposit-wallet concurrency test.</p>
+      <p class="row end" style="padding:28px 0;">156 tests across worker, orchestrator, and the shared amounts library — including a deposit-wallet concurrency test.</p>
     </div>
   </div>
-  <div class="footer"><span>affluents</span><span class="r">07</span></div>
+  <div class="footer"><span>affluents</span><span class="r">08</span></div>
 </section>
 
 <section class="slide">
@@ -158,20 +176,21 @@
     <p class="row" style="padding:32px 0;"><strong>Arc</strong> — settlement layer · USDC-as-gas · sub-second deterministic finality</p>
     <p class="row" style="padding:32px 0;"><strong>Circle Developer-Controlled Wallets (SCA)</strong> — the entire wallet layer: deposit pool + treasury, spend, reserve roles</p>
     <p class="row" style="padding:32px 0;"><strong>Circle Gas Station</strong> — every sweep, transfer, and vault deposit sponsored; no wallet holds gas</p>
+    <p class="row" style="padding:32px 0;"><strong>Arc App Kit</strong> — live USDC→EURC swaps with a journaled slippage ladder and oracle guard</p>
     <p class="row end" style="padding:32px 0;"><strong>USDC + EURC</strong> — pay in USDC, hold Spend in EURC; multi-currency by default</p>
   </div>
-  <div class="footer"><span>affluents</span><span class="r">08</span></div>
+  <div class="footer"><span>affluents</span><span class="r">09</span></div>
 </section>
 
 <section class="slide">
-  <span class="label">Next by final submission</span>
+  <span class="label">Shipped since Checkpoint 2</span>
   <div class="cols" style="margin-top:64px;">
     <div class="col" style="width:880px;font-size:30px;line-height:1.5;">
-      <p class="row" style="padding:28px 0;">Arc App Kit live USDC→EURC FX quotes — replacing the labeled demo rate</p>
-      <p class="row" style="padding:28px 0;">Read-only client portal</p>
-      <p class="row" style="padding:28px 0;">Withdraw from Earn</p>
-      <p class="row" style="padding:28px 0;">Dashboard upgrades: time ranges, by-client view</p>
-      <p class="row end" style="padding:28px 0;">3-minute demo video</p>
+      <p class="row" style="padding:28px 0;">Arc App Kit live USDC→EURC FX — journaled tolerance ladder, oracle guard</p>
+      <p class="row" style="padding:28px 0;">Read-only client receipts — capability links, least-privilege lookups</p>
+      <p class="row" style="padding:28px 0;">Withdraw from Earn — two journaled hops, crash-safe reconciliation</p>
+      <p class="row" style="padding:28px 0;">Overpayment holds proven live — flagged, surfaced, never auto-routed</p>
+      <p class="row end" style="padding:28px 0;">Remaining by Demo Day: the 3-minute video</p>
     </div>
     <div class="col" style="text-align:center;padding:120px 0 0 120px;">
       <svg viewBox="1 3 46 18" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:360px;height:141px;">
