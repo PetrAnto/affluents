@@ -184,8 +184,130 @@ async function withdrawcard() {
   await browser.close();
 }
 
+// VIDEO_SCRIPT shot 5: Playwright VIDEO recording of the live dashboard while
+// the operator's M2 payment routes. Read-only — reload loop only, no clicks.
+// Arm between clips M1 and M2; prints when recording so M2 can start.
+async function shot5() {
+  const secret = requireSecret();
+  const url = `${BASE_URL}/dashboard/${secret}`;
+  const rawDir = join(OUT_DIR, '..', 'media', 'raw');
+  mkdirSync(rawDir, { recursive: true });
+  const browser = await launch();
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    recordVideo: { dir: rawDir, size: { width: 1920, height: 1080 } },
+  });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: 'networkidle' });
+  const total = async () => (await page.textContent('body'))?.match(/Total received[^\d]*([\d.]+)/)?.[1];
+  const t0 = await total();
+  console.log(`RECORDING — baseline total ${t0} USDC. Run clip M2 (pay) now.`);
+
+  const deadline = Date.now() + 150_000;
+  let landed = false;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(4000);
+    await page.reload({ waitUntil: 'networkidle' });
+    const t = await total();
+    if (!landed && t !== t0) {
+      landed = true;
+      console.log(`payment landed — total now ${t}; recording routing for ~40s more`);
+      // routing + live FX complete in ~45s; keep reloading through it
+      for (let i = 0; i < 9; i++) {
+        await page.waitForTimeout(4500);
+        await page.reload({ waitUntil: 'networkidle' });
+      }
+      await page.waitForTimeout(8000); // hold on the settled totals
+      break;
+    }
+  }
+  if (!landed) console.log('no payment seen within 150s — video saved anyway, re-arm for another take');
+  const video = page.video();
+  await context.close();
+  const path = await video.path();
+  console.log('VIDEO_WRITTEN ' + path);
+  await browser.close();
+}
+
+async function recordingContext(browser) {
+  const rawDir = join(OUT_DIR, '..', 'media', 'raw');
+  mkdirSync(rawDir, { recursive: true });
+  return browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    recordVideo: { dir: rawDir, size: { width: 1920, height: 1080 } },
+  });
+}
+
+async function finishRecording(page, context, browser, name) {
+  const video = page.video();
+  await context.close();
+  const path = await video.path();
+  const { renameSync } = await import('node:fs');
+  const dest = join(OUT_DIR, '..', 'media', 'raw', `${name}.webm`);
+  renameSync(path, dest);
+  console.log('VIDEO_WRITTEN ' + dest);
+  await browser.close();
+}
+
+// Shot 7 — honest FX: the paid invoice's routing rows (journaled live rate,
+// actual EURC out). Public page, read-only. Pass the invoice id as argv[3].
+async function shot7() {
+  const invId = process.argv[3];
+  if (!invId) { console.error('usage: node capture.mjs shot7 <invoice-id>'); process.exit(1); }
+  const browser = await launch();
+  const context = await recordingContext(browser);
+  const page = await context.newPage();
+  await page.goto(`${BASE_URL}/pay/${invId}`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(4000);
+  await page.locator('text=live rate').first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(11000); // hold on the FX line
+  await finishRecording(page, context, browser, 'shot7-fx');
+}
+
+// Shot 9 — THE withdrawal take (VIDEO_SCRIPT beat 6). Moves money: run ONLY
+// after the operator's explicit go. This is the single scripted #wdYes click
+// in the repo; single-pending discipline is server-enforced.
+async function shot9() {
+  const secret = requireSecret();
+  const browser = await launch();
+  const context = await recordingContext(browser);
+  const page = await context.newPage();
+  await page.goto(`${BASE_URL}/dashboard/${secret}`, { waitUntil: 'networkidle' });
+  await page.locator('#wd').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(2500);
+  await page.fill('#wdAmt', '0.30');
+  await page.waitForTimeout(1200);
+  await page.click('#wdGo');
+  await page.locator('#wdConfirm').waitFor({ state: 'visible' });
+  await page.waitForTimeout(2500); // hold on the confirm question
+  await page.click('#wdYes');
+  console.log('confirmed — recording defluence through completion');
+  // The card polls and the page reloads itself on completion; record through
+  // the pending window plus the settled reload.
+  await page.waitForTimeout(45000);
+  await finishRecording(page, context, browser, 'shot9-withdraw');
+}
+
+// Shot 10 — withdrawals history row + ArcScan flash. Read-only navigation;
+// retargets the explorer link to the same tab so the recording follows it.
+async function shot10() {
+  const secret = requireSecret();
+  const browser = await launch();
+  const context = await recordingContext(browser);
+  const page = await context.newPage();
+  await page.goto(`${BASE_URL}/dashboard/${secret}`, { waitUntil: 'networkidle' });
+  await page.locator('.slabel', { hasText: 'Withdrawals' }).first().scrollIntoViewIfNeeded();
+  await page.waitForTimeout(6000); // hold on the history rows
+  const link = page.locator('section:has(.slabel:text("Withdrawals")) a', { hasText: 'Vault' }).first();
+  await link.evaluate((a) => a.removeAttribute('target'));
+  await link.click();
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(6000); // flash ArcScan
+  await finishRecording(page, context, browser, 'shot10-history');
+}
+
 const mode = process.argv[2];
-const modes = { smoke, defluence, gate2, withdrawcard };
+const modes = { smoke, defluence, gate2, withdrawcard, shot5, shot7, shot9, shot10 };
 if (!modes[mode]) {
   console.error(`usage: node capture.mjs <${Object.keys(modes).join('|')}>`);
   process.exit(1);
