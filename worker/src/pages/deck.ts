@@ -101,7 +101,7 @@ export function deckPage(): string {
 <section class="slide">
   <span class="label">Working today on Arc testnet</span>
   <div class="display" style="font-size:62px;margin-top:44px;line-height:1.15;">
-    Eight invoices routed end-to-end.<br>Not mocked, not local.
+    Ten invoices routed end-to-end.<br>Not mocked, not local.
   </div>
   <div class="cols" style="margin-top:72px;">
     <div class="col" style="width:820px;font-size:29px;line-height:1.6;color:var(--muted);">
@@ -109,14 +109,14 @@ export function deckPage(): string {
       <p class="row end" style="padding:30px 0;">Every movement linked to ArcScan. Conservation verified against both the ledger and on-chain balances. A 0.50 overpayment is held, never auto-routed.</p>
     </div>
     <div class="col" style="padding-left:120px;">
-      <p style="font-size:26px;color:var(--muted);">Across eight invoices</p>
-      <p class="display" style="font-size:64px;margin-top:14px;">16.20 USDC in</p>
+      <p style="font-size:26px;color:var(--muted);">Across ten invoices</p>
+      <p class="display" style="font-size:64px;margin-top:14px;">20.60 USDC in</p>
       <p style="font-size:34px;line-height:1.9;margin-top:26px;">
-        <strong style="color:var(--river);">7.63 EURC</strong> Spend · live rate<br>
-        <strong style="color:var(--reserve);">4.81 USDC</strong> Reserve<br>
-        <strong style="color:var(--earn);">1.43 USDC</strong> Earn
+        <strong style="color:var(--river);">9.65 EURC</strong> Spend · live rate<br>
+        <strong style="color:var(--reserve);">6.21 USDC</strong> Reserve<br>
+        <strong style="color:var(--earn);">1.79 USDC</strong> Earn
       </p>
-      <p style="font-size:24px;color:var(--muted);margin-top:22px;">Exact to the micro-dollar, after a 0.80 withdrawal Earn → Reserve.</p>
+      <p style="font-size:24px;color:var(--muted);margin-top:22px;">Exact to the micro-dollar, after 1.10 withdrawn Earn → Reserve.</p>
     </div>
   </div>
   <div class="footer"><span>affluents</span><span class="r">04</span></div>
