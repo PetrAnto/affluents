@@ -52,7 +52,7 @@ export function landingPage(): string {
       <nav><a href="/create">New invoice</a></nav>
     </header>
     <section class="hero">
-      <h1>One payment in. Your money routes itself.</h1>
+      <h1>One payment in.<br>Your money routes itself.</h1>
       <p>Share a payment link. When your client pays USDC on Arc, Affluents routes it by your rules — Spend, Reserve, Earn.</p>
       <a class="cta" href="/create">Create a payment link</a>
     </section>
