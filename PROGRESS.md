@@ -948,3 +948,24 @@ upgrades, EURC-on-withdraw, retry layer.
 - NEXT: assembly (HyperFrames; ffmpeg fallback) → design/media/
   affluents-demo-3min.mp4, ≤3:00, <100MB. Capture modes shot5/7/9/10 in
   capture.mjs if any take needs redoing.
+
+## Demo video assembled and rendered — design/media/affluents-demo-3min.mp4 (2026-08-06)
+
+- Built with HyperFrames (general-video workflow; skills installed via
+  `npx hyperframes skills update`). Project lives in `videos/affluents-demo/`
+  (untracked, shielded via .git/info/exclude — BRIEF.md, STORYBOARD.md,
+  design.md, index.html + 11 scene sub-compositions; assets are copies of
+  the shoot takes, mobile clips pre-cropped to remove status/URL bars).
+- Per VIDEO_SCRIPT v2: real recordings as the spine, verbatim cards,
+  phone-frame composition, no timer overlay, 3 soft transitions, silent.
+  s5 uses two honest cuts of the one live take (payment lands 16.20→18.40,
+  then the buckets fill on camera). Gates run: lint 0 errors, check passed
+  (contrast 4/4 AA), 3 draft renders with operator frame-gates, then the
+  final: H.264 1920x1080 30fps, 180.0s exactly, 8.8 MB.
+- Render-path lessons (for any re-render): the producer's frame injection
+  ignores CSS offsets on <video> — pre-crop assets instead; Playwright
+  webms don't input-seek (scan full-pass); hyperframes CLI cannot run in
+  the agent sandbox (onnxruntime postinstall + browser) — all CLI commands
+  operator-side.
+- Remaining before submission: operator watches the video start-to-finish
+  once (agent verified frames, not playback), then Encode upload + link.
