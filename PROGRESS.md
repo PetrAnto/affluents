@@ -969,3 +969,31 @@ upgrades, EURC-on-withdraw, retry layer.
   operator-side.
 - Remaining before submission: operator watches the video start-to-finish
   once (agent verified frames, not playback), then Encode upload + link.
+
+## Checkpoint 3 submission package complete (2026-08-07)
+
+- **README** rewritten judge-facing (link block, 60-second story, why Arc,
+  Circle stack with code links, architecture SVG, honest money engineering,
+  live links, repo tour, roadmap). `design/architecture.svg` committed —
+  brand tokens, confluence-glyph skeleton, Worker+D1/orchestrator boundary,
+  intent-journal strip. All figures from the frozen 2026-08-06 books
+  (re-verified live twice during the cycle, incl. a fresh dashboard capture).
+- **Videos on YouTube (Unlisted, both verified logged-out):** demo 3:00
+  https://www.youtube.com/watch?v=jReiv6Vp6hw · team 90s
+  https://youtu.be/De818WILcPU — D6 amended by operator: card-based team
+  video built from the operator's script (HyperFrames, silent, brand cards +
+  fresh frozen-books dashboard still), no selfie take. Final render pinned
+  hyperframes@0.7.94; lesson: `npx hyperframes` unpinned resolves latest and
+  its hidden install prompt hangs piped commands — always use the project's
+  pinned `npm run` scripts.
+- **Form**: D7 description + 303-word Submission Details pasted; demo/live
+  links set; DeFi Track ticked; team field = the 90s video. "No changes
+  detected" warning on Code/Presentation links is benign (same URLs, updated
+  content behind them).
+- Scaffolding removed for judges: APPKIT_FX_*, DEMO_DATA_HANDOFF,
+  SUBMISSION_HANDOFF (this commit — its content is summarized here).
+  Kept deliberately: SUBMISSION_CHECKPOINT2.md, VIDEO_SCRIPT.md.
+- **After submission: NOTHING MOVES** — no pushes, deploys, or money
+  movements; books intact through Tech Check (Aug 13) and Demo Day (Aug 20).
+  Resume for Demo Day prep: Q&A rehearsal on FX deviation + the
+  single-pending-withdrawal rule.
